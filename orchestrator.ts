@@ -27,11 +27,16 @@ const MAX_RETRIES = 5
 
 type Role = 'Planner' | 'Generator' | 'Evaluator'
 
+interface Evaluation {
+  checks: string[]   // 确定性命令，orchestrator 用 execSync 跑（L1）
+  intent: string     // 领域上下文，给 Evaluator 理解意图用（L2）
+}
+
 interface Feature {
   id: string
   name: string
   prompt: string
-  evaluation: string
+  evaluation: Evaluation | string  // 兼容旧格式
   status: 'pending' | 'failing' | 'passing'
 }
 
@@ -236,26 +241,68 @@ async function execute(): Promise<void> {
   console.log(`\n  [${green('█'.repeat(filled))}${dim('░'.repeat(20 - filled))}]  ${passCount}/${total} passing\n`)
 }
 
-// ─── Evaluator ───
+// ─── L1: 确定性检查（零 token，秒级）───
+
+function parseEvaluation(evaluation: Evaluation | string | undefined): Evaluation {
+  if (!evaluation) return { checks: [], intent: '' }
+  if (typeof evaluation === 'string') return { checks: [], intent: evaluation }
+  return evaluation
+}
+
+function runChecks(checks: string[]): { pass: boolean; output: string } {
+  const results: string[] = []
+  for (const cmd of checks) {
+    console.log(`    ${dim('$')} ${dim(cmd.slice(0, 100))}`)
+    try {
+      const out = execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
+      results.push(`✓ ${cmd}`)
+    } catch (e: any) {
+      const output = ((e.stdout ?? '') + (e.stderr ?? '')).trim()
+      const tail = output.length > 1500 ? '...\n' + output.slice(-1500) : output
+      console.log(`    ${red('✗')} ${dim('check failed')}`)
+      return {
+        pass: false,
+        output: `Command failed: ${cmd}\n\n${tail}`,
+      }
+    }
+  }
+  if (results.length > 0) {
+    console.log(`    ${green('✓')} ${dim(`${results.length} checks passed`)}`)
+  }
+  return { pass: true, output: results.join('\n') }
+}
+
+// ─── L2: Evaluator agent（独立验证，耗 token）───
 
 const EVAL_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
     properties: {
-      passed: { type: 'boolean', description: 'true only if ALL tests pass AND code follows golden principles' },
-      tests: { type: 'string', description: 'e.g. "4 passed, 0 failed"' },
-      feedback: { type: 'string', description: 'If failed: what is wrong, which tests fail, how to fix. Cite file paths and line numbers.' },
+      passed: { type: 'boolean', description: 'true only if the implementation genuinely fulfills the original intent and is robust' },
+      tests: { type: 'string', description: 'summary of what you verified' },
+      feedback: { type: 'string', description: 'If failed: what is wrong and how to fix. Cite file paths and line numbers.' },
     },
     required: ['passed', 'tests', 'feedback'],
   },
 }
 
 async function evaluate(feature: Feature, principles: string): Promise<EvalResult> {
+  const eval_ = parseEvaluation(feature.evaluation)
+
+  // L1: 确定性检查 —— 快速失败，不启动 Evaluator
+  if (eval_.checks.length > 0) {
+    const checkResult = runChecks(eval_.checks)
+    if (!checkResult.pass) {
+      return { passed: false, tests: 'L1 check failed', feedback: checkResult.output }
+    }
+  }
+
+  // L2: Evaluator agent —— 独立验证（只收到任务意图，不收到验证指令）
   const { structured, result } = await runAgent('Evaluator', loadPrompt('evaluator', {
     featureId: feature.id,
     featurePrompt: feature.prompt,
-    evaluation: feature.evaluation ?? '',
+    intent: eval_.intent,
     principles,
   }), { outputFormat: EVAL_SCHEMA })
 

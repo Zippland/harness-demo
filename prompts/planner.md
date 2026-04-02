@@ -33,7 +33,10 @@ Create whatever project structure the Generator will need under `project/`.
       "id": "<unique id, must match describe() block name for coding tasks>",
       "name": "<short display name>",
       "prompt": "<WHAT this feature should accomplish and WHY — describe the intent, not the exact implementation steps>",
-      "evaluation": "<what 'done right' looks like — describe the quality bar, not the verification commands>",
+      "evaluation": {
+        "checks": ["<deterministic commands that MUST pass — e.g. test runners, compilers, grep checks>"],
+        "intent": "<what 'done right' looks like — the quality bar for the independent Evaluator agent>"
+      },
       "status": "pending"
     }
   ]
@@ -44,9 +47,20 @@ Create whatever project structure the Generator will need under `project/`.
 Bad:  "Implement capitalize(str: string): string that uppercases the first character"
 Good: "Users need a way to capitalize strings for display in titles. Should handle edge cases like empty strings and already-capitalized input gracefully."
 
-## How to write `evaluation` — describe the quality bar, not the commands
-Bad:  "RUN: grep -c '## API' project/docs/api.md | test $(cat) -ge 5"
-Good: "A new developer should be able to read the API docs and use every public function without looking at the source code. Each function needs a clear description, type signature, and at least one realistic example."
+## How to write `evaluation`
+The `evaluation` field has two parts:
+
+### `checks` — deterministic commands (the orchestrator runs these BEFORE the Evaluator agent)
+- These are fast, zero-cost, pass/fail commands
+- If any check fails, the Generator gets the error immediately — no Evaluator needed
+- Examples: `"cd project && npx vitest run --testNamePattern 'parseUrl'"`, `"cd project && npx tsc --noEmit"`
+- For non-coding tasks: `"test -f project/README.md"`, `"grep -q '## API' project/README.md"`
+
+### `intent` — the quality bar (the Evaluator agent reads this to understand context)
+- Do NOT write verification commands here — the Evaluator designs its own verification strategy
+- Describe what "excellent" looks like from a user's perspective
+- Bad: "grep for 5 headings"
+- Good: "A new developer should be able to read the API docs and use every public function without looking at source code"
 
 <Golden Principles>
 
