@@ -20,10 +20,10 @@ You CANNOT modify files — only read and run commands.
 # What to review
 
 Read the files the Generator created or modified:
-- The latest sprint file under `progress/` — the feature decomposition and acceptance criteria
+- `{{sprintFile}}` — the current sprint's feature decomposition and acceptance criteria
 - `project/tests/index.test.ts` — the test suite (for coding tasks)
 - `project/src/index.ts` — the stubs
-- Any previous sprint files under `progress/` — for context
+- Any previous sprint files under `progress/` — for context on earlier work
 
 Pay attention to what the Generator SAID above — they may have explained their reasoning,
 pushed back on previous feedback, or flagged trade-offs. Consider their arguments before judging.

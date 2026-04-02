@@ -167,8 +167,9 @@ async function runAgent(
     }
   }
 
-  // 用完整的文字记录（不只是 result 摘要）作为传递给另一个 agent 的内容
-  const fullResponse = textBlocks.join('\n\n') || result
+  // 用完整的文字记录，截断防止撑爆下一个 agent 的上下文
+  const joined = textBlocks.join('\n\n') || result
+  const fullResponse = joined.length > 5000 ? joined.slice(-5000) : joined
 
   return { sessionId, result: fullResponse, structured }
 }
@@ -213,7 +214,7 @@ const REVIEW_SCHEMA = {
   },
 }
 
-async function negotiate(task: string, sprintNum: number, previousReview?: string): Promise<void> {
+async function negotiate(task: string, sprintNum: number, previousReview?: string, evalSessionFromReview?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const sprintFile = sprintPath(sprintNum)
@@ -228,7 +229,7 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
         progressFile: sprintFile,
         sprintNum: String(sprintNum),
       })
-    : loadPrompt('generator-plan', { task, principles, progressFile: sprintFile })
+    : loadPrompt('generator-plan', { task, principles, progressFile: sprintFile, sprintNum: String(sprintNum) })
 
   let gen = await runAgent('Generator', genPrompt)
 
@@ -237,18 +238,32 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
     process.exit(1)
   }
 
+  // 确保 sprint 文件有 phase 字段（Generator 可能没写）
+  const initialSprint = loadSprint(sprintNum)
+  if (!initialSprint.phase) {
+    initialSprint.phase = 'negotiate'
+    writeFileSync(sprintFile, JSON.stringify(initialSprint, null, 2))
+  }
+
   // Generator ↔ Evaluator 对话协商
-  // 双方通过文字交换观点，只有达成一致才修改文件
+  // 双方各自顺承（resume），保持对话上下文
   let generatorSaid = gen.result
+  let evalSessionId = evalSessionFromReview ?? ''
 
   for (let round = 1; round <= MAX_NEGOTIATE_ROUNDS; round++) {
-    // Evaluator 审计划 + 读 Generator 的文字回复
-    const { structured, result: evaluatorSaid } = await runAgent('Evaluator', loadPrompt('evaluator-plan', {
+    // Evaluator 审计划 + 读 Generator 的文字回复（同一 session 顺承）
+    const evalPrompt = loadPrompt('evaluator-plan', {
       task,
       principles,
       sprintFile,
       generatorResponse: generatorSaid,
-    }), { outputFormat: REVIEW_SCHEMA })
+    })
+    const evalResult = await runAgent('Evaluator', evalPrompt, {
+      outputFormat: REVIEW_SCHEMA,
+      ...(evalSessionId ? { resume: evalSessionId } : {}),
+    })
+    evalSessionId = evalResult.sessionId
+    const { structured, result: evaluatorSaid } = evalResult
 
     const review = parseReview(structured)
     if (!review) {
@@ -351,11 +366,11 @@ async function implement(sprintNum: number): Promise<void> {
 // Phase 2: reviewAll — Evaluator 全局审查
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function reviewAll(task: string, sprintNum: number): Promise<ReviewResult | null> {
+async function reviewAll(task: string, sprintNum: number): Promise<{ review: ReviewResult | null; evalSessionId: string }> {
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
 
-  const { structured } = await runAgent('Evaluator', loadPrompt('evaluator-review', {
+  const { structured, sessionId } = await runAgent('Evaluator', loadPrompt('evaluator-review', {
     task,
     principles,
   }), { outputFormat: REVIEW_SCHEMA })
@@ -363,11 +378,11 @@ async function reviewAll(task: string, sprintNum: number): Promise<ReviewResult 
   const review = parseReview(structured)
   if (!review) {
     console.log(dim('    Could not parse review'))
-    return null
+    return { review: null, evalSessionId: sessionId }
   }
 
   printReview(review)
-  return review
+  return { review, evalSessionId: sessionId }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -501,6 +516,7 @@ async function main(): Promise<void> {
   }
 
   const resolvedTask = task || (existingSprint > 0 ? loadSprint(existingSprint).task : '')
+  let evalSessionFromLastReview: string | undefined
 
   for (let sprintNum = startSprint; sprintNum <= startSprint + MAX_SPRINTS; sprintNum++) {
     console.log(bold(`\n  ━━━━━━━━━━━━━━━━━━━━━━━━━`))
@@ -512,9 +528,9 @@ async function main(): Promise<void> {
       ? loadSprint(sprintNum).phase
       : null
 
-    // Phase 0: 协商
+    // Phase 0: 协商（传入上一轮 review 的 Evaluator session，保持对话连续）
     if (!resumePhase || resumePhase === 'negotiate') {
-      await negotiate(resolvedTask, sprintNum, previousReview)
+      await negotiate(resolvedTask, sprintNum, previousReview, evalSessionFromLastReview)
       updateSprintState(sprintNum, 'implement')
     }
 
@@ -525,7 +541,7 @@ async function main(): Promise<void> {
     }
 
     // Phase 2: 全局审查
-    const review = await reviewAll(resolvedTask, sprintNum)
+    const { review, evalSessionId } = await reviewAll(resolvedTask, sprintNum)
 
     if (!review || review.approved) {
       updateSprintState(sprintNum, 'done')
@@ -537,7 +553,8 @@ async function main(): Promise<void> {
       break
     }
 
-    // 有分歧 → 写入 sprint 文件，下一轮讨论
+    // 有分歧 → Evaluator session 传给下一轮 negotiate
+    evalSessionFromLastReview = evalSessionId
     previousReview = formatReviewForDiscussion(review)
     updateSprintState(sprintNum, 'done', previousReview)
 

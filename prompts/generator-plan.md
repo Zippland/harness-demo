@@ -22,7 +22,7 @@ Set up files under `project/`:
 ## 3. Write {{progressFile}}
 ```json
 {
-  "sprint": <sprint number>,
+  "sprint": {{sprintNum}},
   "task": "<the original task, verbatim>",
   "features": [
     {
@@ -45,6 +45,17 @@ Set up files under `project/`:
 {{principles}}
 
 </Golden_Principles>
+
+# How to write `evaluation`
+
+### `checks` — deterministic commands the orchestrator runs automatically (zero cost)
+- Must be valid shell commands that exit 0 on success, non-zero on failure
+- For coding tasks: `"cd project && npx vitest run --testNamePattern 'featureId' --reporter verbose"`
+- For file checks: `"test -f project/README.md"`, `"grep -q '## API' project/README.md"`
+
+### `intent` — the quality bar (the Evaluator reads this to understand your expectations)
+- Describe what "done right" looks like, not what commands to run
+- The Evaluator designs its own verification strategy based on this
 
 # Remember
 - Your tests and criteria will be reviewed by the Evaluator
