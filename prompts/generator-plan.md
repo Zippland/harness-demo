@@ -8,16 +8,24 @@ Your plan will be reviewed by an independent Evaluator — think of this as a ne
 
 </TASK>
 
+# CRITICAL: This is the PLANNING phase, NOT the implementation phase.
+Do NOT implement any features. Do NOT write final content.
+Your ONLY job is to produce a plan (sprint file) and minimal scaffolding.
+Implementation happens later in a separate phase.
+
 # What you must produce
 
-## 1. Decompose the task
-Break it into 5–10 independently deliverable features.
+## 1. Research and decompose the task
+Read whatever you need to understand the task, then break it into 5–10 independently deliverable features.
 Think about: what order makes sense? What builds on what?
 
-## 2. Write project scaffolding
-Set up files under `project/`:
-- For coding tasks: write vitest tests in `project/tests/index.test.ts` and stubs in `project/src/index.ts`
-- For other tasks: create the target file structure
+## 2. Write MINIMAL project scaffolding
+Set up the bare minimum structure under `project/` — just enough so that checks can run:
+- For coding tasks: write vitest tests and function stubs (NOT implementations)
+- For documentation/wiki tasks: create empty placeholder files or directory structure (NOT the actual content)
+- For other tasks: create whatever minimal structure is needed
+
+Do NOT write actual implementations, final content, or finished artifacts.
 
 ## 3. Write {{progressFile}}
 ```json
@@ -58,7 +66,9 @@ Set up files under `project/`:
 - The Evaluator designs its own verification strategy based on this
 
 # Remember
-- Your tests and criteria will be reviewed by the Evaluator
+- This is PLANNING only — do NOT implement features or write final content
+- Your plan and criteria will be reviewed by the Evaluator
 - Write tests that are rigorous but fair — edge cases matter
 - The Evaluator will push back if your criteria are too vague or your tests have gaps
 - You and the Evaluator must agree before implementation begins
+- Implementation happens in a separate phase AFTER this plan is approved
