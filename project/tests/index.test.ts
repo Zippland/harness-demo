@@ -1,1 +1,1 @@
-// Waiting for harness planner to write tests.
+// Waiting for harness to scaffold this project.

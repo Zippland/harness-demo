@@ -47,7 +47,9 @@ interface Feature {
 interface Sprint {
   sprint: number
   task: string
+  phase: 'negotiate' | 'implement' | 'review' | 'done'
   context?: string
+  previousReview?: string
   features: Feature[]
 }
 
@@ -457,46 +459,88 @@ function progressBar(done: number, total: number, width = 20): string {
 // Main — Sprint 大循环
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
+/** 更新 sprint 文件的 phase 和 previousReview */
+function updateSprintState(sprintNum: number, phase: Sprint['phase'], previousReview?: string): void {
+  const file = sprintPath(sprintNum)
+  if (!existsSync(file)) return
+  const sprint = loadSprint(sprintNum)
+  sprint.phase = phase
+  if (previousReview !== undefined) sprint.previousReview = previousReview
+  writeFileSync(file, JSON.stringify(sprint, null, 2))
+}
+
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(' ').trim()
+  const existingSprint = currentSprintNumber()
 
-  if (!task && currentSprintNumber() === 0) {
+  if (!task && existingSprint === 0) {
     console.error('  Usage: npm start "<task description>"')
     process.exit(1)
   }
 
   console.log(dim('\n  ─── Harness: Generator ↔ Evaluator ───\n'))
 
+  // 断点恢复：检查上一个 sprint 是否完成
+  let startSprint = existingSprint + 1
   let previousReview: string | undefined
 
-  for (let sprintNum = currentSprintNumber() + 1; sprintNum <= MAX_SPRINTS + currentSprintNumber(); sprintNum++) {
+  if (existingSprint > 0) {
+    const lastSprint = loadSprint(existingSprint)
+    if (lastSprint.phase !== 'done') {
+      // 上一个 sprint 没跑完，从它的当前 phase 继续
+      startSprint = existingSprint
+      previousReview = lastSprint.previousReview
+      const taskFromFile = lastSprint.task
+      if (!task && taskFromFile) {
+        // 用 sprint 文件里的 task（不需要用户重新输入）
+        console.log(dim(`  Resuming sprint ${existingSprint} (phase: ${lastSprint.phase})\n`))
+      }
+    } else {
+      previousReview = lastSprint.previousReview
+    }
+  }
+
+  const resolvedTask = task || (existingSprint > 0 ? loadSprint(existingSprint).task : '')
+
+  for (let sprintNum = startSprint; sprintNum <= startSprint + MAX_SPRINTS; sprintNum++) {
     console.log(bold(`\n  ━━━━━━━━━━━━━━━━━━━━━━━━━`))
     console.log(bold(`       Sprint ${sprintNum}`))
     console.log(bold(`  ━━━━━━━━━━━━━━━━━━━━━━━━━\n`))
 
+    // 断点恢复：跳过已完成的 phase
+    const resumePhase = (sprintNum === startSprint && existingSprint > 0 && existsSync(sprintPath(sprintNum)))
+      ? loadSprint(sprintNum).phase
+      : null
+
     // Phase 0: 协商
-    await negotiate(task, sprintNum, previousReview)
+    if (!resumePhase || resumePhase === 'negotiate') {
+      await negotiate(resolvedTask, sprintNum, previousReview)
+      updateSprintState(sprintNum, 'implement')
+    }
 
     // Phase 1: 实现 + L1
-    await implement(sprintNum)
+    if (!resumePhase || resumePhase === 'negotiate' || resumePhase === 'implement') {
+      await implement(sprintNum)
+      updateSprintState(sprintNum, 'review')
+    }
 
     // Phase 2: 全局审查
-    const review = await reviewAll(task, sprintNum)
+    const review = await reviewAll(resolvedTask, sprintNum)
 
     if (!review || review.approved) {
-      // 统计所有 sprint 的总 feature 数
+      updateSprintState(sprintNum, 'done')
       let totalFeatures = 0
       for (let s = 1; s <= sprintNum; s++) {
-        if (existsSync(sprintPath(s))) {
-          totalFeatures += loadSprint(s).features.length
-        }
+        if (existsSync(sprintPath(s))) totalFeatures += loadSprint(s).features.length
       }
       console.log(green(bold(`\n  ✓ ALL APPROVED after ${sprintNum} sprint(s) — ${totalFeatures} features total\n`)))
       break
     }
 
-    // 有分歧 → 下一轮讨论
+    // 有分歧 → 写入 sprint 文件，下一轮讨论
     previousReview = formatReviewForDiscussion(review)
+    updateSprintState(sprintNum, 'done', previousReview)
+
     const disputeCount = (review.reviews ?? []).filter((r) => r.status === 'needs-revision').length
     console.log(yellow(`\n  ${disputeCount} features under dispute → Sprint ${sprintNum + 1}\n`))
   }

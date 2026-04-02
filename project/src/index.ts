@@ -1,1 +1,1 @@
-// Waiting for harness planner to scaffold this project.
+// Waiting for harness to scaffold this project.
