@@ -6,6 +6,8 @@
  *   Generator: Read, Write, Edit, Glob, Grep, Bash → 实现代码
  *   Evaluator: Read, Glob, Grep, Bash            → 跑测试 + 审代码（不能写文件）
  *
+ * Prompt 模板在 prompts/ 目录下，用 {{var}} 占位符。
+ *
  * npm start "构建一个 URL 解析库"
  */
 
@@ -19,6 +21,7 @@ import { fileURLToPath } from 'url'
 const ROOT = dirname(fileURLToPath(import.meta.url))
 const PROGRESS_FILE = resolve(ROOT, 'progress.json')
 const PRINCIPLES_FILE = resolve(ROOT, 'control/golden-principles.md')
+const PROMPTS_DIR = resolve(ROOT, 'prompts')
 const MAX_RETRIES = 5
 
 // ─── Types ───
@@ -41,6 +44,13 @@ interface EvalResult {
   passed: boolean
   tests: string
   feedback: string
+}
+
+// ─── Prompt loader ───
+
+function loadPrompt(name: string, vars: Record<string, string>): string {
+  const tmpl = readFileSync(resolve(PROMPTS_DIR, `${name}.md`), 'utf-8')
+  return tmpl.replace(/\{\{(\w+)\}\}/g, (_, key) => vars[key] ?? `{{${key}}}`)
 }
 
 // ─── ANSI ───
@@ -109,7 +119,6 @@ async function runAgent(
   let structured: any
 
   for await (const msg of q) {
-    // 实时打印 agent 活动
     if (msg.type === 'assistant') {
       for (const block of ((msg as any).message?.content ?? [])) {
         if (block.type === 'text' && block.text?.trim()) {
@@ -151,42 +160,11 @@ async function plan(task: string): Promise<void> {
   console.log(bold(`\n  PLAN: "${task}"\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
 
-  await runAgent('Planner', `
-You are the Planner in a three-agent harness (Planner → Generator → Evaluator).
-Research the task, decompose it, write tests, and create a development plan.
-
-# Task
-${task}
-
-# You must produce these files
-
-## 1. project/tests/index.test.ts
-Comprehensive vitest tests — these are the Evaluator's acceptance criteria.
-- 5–10 describe() blocks, one per feature
-- At least 4 it() cases per feature, including edge cases
-- Tests must be deterministic (no network, no random)
-
-## 2. project/src/index.ts
-Export every function as a stub: throw new Error('Not implemented')
-
-## 3. ${PROGRESS_FILE}
-\`\`\`json
-{
-  "task": "<original task>",
-  "features": [
-    { "id": "<MUST match describe() block name>", "name": "<display name>", "prompt": "<implementation instructions>", "status": "pending" }
-  ]
-}
-\`\`\`
-
-# Golden Principles
-${principles}
-
-# Rules
-- feature.id MUST exactly match the describe() block name in tests
-- Write tests FIRST, stubs SECOND, progress.json THIRD
-- Do NOT implement logic — stubs only
-`.trim())
+  await runAgent('Planner', loadPrompt('planner', {
+    task,
+    principles,
+    progressFile: PROGRESS_FILE,
+  }))
 
   if (!existsSync(PROGRESS_FILE)) {
     console.error(red('\n  Plan failed: progress.json not created'))
@@ -218,25 +196,16 @@ async function execute(): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    // ── Generator: 首次实现 ──
-    const { sessionId } = await runAgent('Generator', `
-# Golden Principles
-${principles}
+    // Generator: 首次实现
+    const { sessionId } = await runAgent('Generator', loadPrompt('generator', {
+      principles,
+      featurePrompt: feature.prompt,
+    }))
 
-# Task
-${feature.prompt}
-
-# Constraints
-- Only modify files under project/src/
-- Do NOT modify project/tests/ — those are the Evaluator's criteria
-- Do NOT run tests — the Evaluator does that
-`.trim())
-
-    // ── Evaluate → (fail?) → Feed back → Re-generate → Evaluate ──
+    // Evaluate → (fail?) → Feed back → Re-generate → Evaluate
     let passed = false
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      // Evaluator: 独立验证
       const evalResult = await evaluate(feature, principles)
 
       if (evalResult.passed) {
@@ -248,15 +217,9 @@ ${feature.prompt}
       console.log(`    ${red('FAIL')} ${dim(`attempt ${attempt}/${MAX_RETRIES}`)} ${dim(evalResult.tests)}`)
 
       if (attempt < MAX_RETRIES) {
-        // 把 Evaluator 的反馈喂回 Generator（resume 同一 session）
-        await runAgent('Generator', `
-The Evaluator rejected your implementation.
-
-## Evaluator Feedback
-${evalResult.feedback}
-
-Fix the issues. Do NOT modify test files.
-`.trim(), { resume: sessionId })
+        await runAgent('Generator', loadPrompt('generator-retry', {
+          feedback: evalResult.feedback,
+        }), { resume: sessionId })
       }
     }
 
@@ -265,7 +228,6 @@ Fix the issues. Do NOT modify test files.
     if (!passed) console.log(`    ${red('GAVE UP')}`)
   }
 
-  // Summary
   const passCount = progress.features.filter((f) => f.status === 'passing').length
   const filled = Math.round((passCount / total) * 20)
   console.log(`\n  [${green('█'.repeat(filled))}${dim('░'.repeat(20 - filled))}]  ${passCount}/${total} passing\n`)
@@ -287,26 +249,12 @@ const EVAL_SCHEMA = {
 }
 
 async function evaluate(feature: Feature, principles: string): Promise<EvalResult> {
-  const { structured, result } = await runAgent('Evaluator', `
-You are the Evaluator. Independently verify the Generator's work.
-You CANNOT modify files — only read and run commands.
+  const { structured, result } = await runAgent('Evaluator', loadPrompt('evaluator', {
+    featureId: feature.id,
+    featurePrompt: feature.prompt,
+    principles,
+  }), { outputFormat: EVAL_SCHEMA })
 
-# Feature
-ID: ${feature.id}
-${feature.prompt}
-
-# Steps
-1. Run: cd project && npx vitest run --testNamePattern "${feature.id}" --reporter verbose
-2. Read the implementation in project/src/index.ts
-3. Check against these golden principles:
-${principles}
-
-# Decision
-- ALL tests pass AND code follows principles → passed: true
-- ANY test fails OR principles violated → passed: false with specific feedback
-`.trim(), { outputFormat: EVAL_SCHEMA })
-
-  // 优先用 structured output，fallback 到文本解析
   if (structured && typeof structured === 'object' && 'passed' in structured) {
     return structured as EvalResult
   }
