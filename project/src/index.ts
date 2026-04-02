@@ -288,7 +288,9 @@ export function dateDiffInYears(date1: Date, date2: Date): number {
  * @returns A new Date object
  */
 export function addDays(date: Date, days: number): Date {
-  throw new Error('Not implemented');
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
 }
 
 /**
@@ -300,7 +302,20 @@ export function addDays(date: Date, days: number): Date {
  * @returns A new Date object
  */
 export function addMonths(date: Date, months: number): Date {
-  throw new Error('Not implemented');
+  const result = new Date(date);
+  const originalDay = result.getDate();
+
+  result.setMonth(result.getMonth() + months);
+
+  // Handle month-end overflow: if the day changed unexpectedly,
+  // it means we overflowed into the next month (e.g., Jan 31 + 1 month = Mar 3)
+  // In that case, set to the last day of the target month by going back to day 0
+  if (result.getDate() !== originalDay) {
+    // Setting date to 0 gives us the last day of the previous month
+    result.setDate(0);
+  }
+
+  return result;
 }
 
 /**
@@ -309,6 +324,6 @@ export function addMonths(date: Date, months: number): Date {
  * @param date - The value to check
  * @returns true if the value is a valid Date, false otherwise
  */
-export function isValidDate(date: Date): boolean {
-  throw new Error('Not implemented');
+export function isValidDate(date: unknown): boolean {
+  return date instanceof Date && !isNaN(date.getTime());
 }

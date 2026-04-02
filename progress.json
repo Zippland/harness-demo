@@ -47,25 +47,25 @@
       "id": "dateDiffInYears",
       "name": "Years Difference",
       "prompt": "Implement dateDiffInYears that calculates the whole year difference between two dates. Calculate the year difference and then check if date2's month/day is before date1's anniversary to determine if a full year has passed. Return floor value for partial years.",
-      "status": "pending"
+      "status": "passing"
     },
     {
       "id": "addDays",
       "name": "Add Days",
       "prompt": "Implement addDays that returns a new Date with days added (or subtracted if negative). Create a copy of the input date to avoid mutation, then use setDate(getDate() + days). JavaScript Date handles month/year overflow automatically. Always return a new Date instance.",
-      "status": "pending"
+      "status": "passing"
     },
     {
       "id": "addMonths",
       "name": "Add Months",
       "prompt": "Implement addMonths that returns a new Date with months added (or subtracted if negative). Create a copy of the input date, then set the month using setMonth(getMonth() + months). Handle month-end overflow: if original date is 31st and target month has 30 days, clamp to last day of target month. Check if the day changed unexpectedly and adjust accordingly.",
-      "status": "pending"
+      "status": "passing"
     },
     {
       "id": "isValidDate",
       "name": "Date Validation",
       "prompt": "Implement isValidDate that checks if a value is a valid Date object. Return false for: null, undefined, non-Date objects, or Date objects where getTime() returns NaN (Invalid Date). Use instanceof Date check combined with !isNaN(date.getTime()) to verify validity. Handle edge cases like epoch date (new Date(0)) which is valid.",
-      "status": "pending"
+      "status": "passing"
     }
   ]
 }
