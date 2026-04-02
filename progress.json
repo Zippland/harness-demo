@@ -1,0 +1,71 @@
+{
+  "task": "构建一个日期处理工具库，支持日期格式化、相对时间描述（如3天前）、以及两个日期之间的差值计算",
+  "features": [
+    {
+      "id": "formatDate",
+      "name": "Date Formatting",
+      "prompt": "Implement the formatDate function that takes a Date object and a format string pattern, returning a formatted date string. Support tokens: YYYY (4-digit year), MM (2-digit month), DD (2-digit day), HH (2-digit hour 24h), mm (2-digit minute), ss (2-digit second). All numeric values should be zero-padded. The function should replace each token in the format string with the corresponding date component.",
+      "status": "passing"
+    },
+    {
+      "id": "parseDate",
+      "name": "Date Parsing",
+      "prompt": "Implement the parseDate function that takes a date string and a format pattern, returning a Date object. Support patterns: YYYY-MM-DD, DD/MM/YYYY, MM-DD-YYYY. Extract year, month, and day based on token positions in the format string. Throw an error if the string doesn't match the expected format pattern or produces an invalid date. Month values in the format are 1-indexed but Date constructor expects 0-indexed months.",
+      "status": "passing"
+    },
+    {
+      "id": "getRelativeTime",
+      "name": "Relative Time",
+      "prompt": "Implement getRelativeTime that compares two dates and returns a human-readable relative time string. For past dates use 'X unit ago' format, for future dates use 'in X unit' format. Handle singular/plural forms (1 day ago vs 2 days ago). Time thresholds: <1min='just now', <1hr=minutes, <1day=hours, <1week=days, <1month=weeks, <1year=months, else=years. Calculate differences using milliseconds and appropriate divisors.",
+      "status": "passing"
+    },
+    {
+      "id": "getRelativeTimeFromNow",
+      "name": "Relative Time From Now",
+      "prompt": "Implement getRelativeTimeFromNow as a convenience wrapper that calls getRelativeTime with the current time (new Date()) as the reference date. This provides a simpler API for the common use case of describing a date relative to the current moment.",
+      "status": "passing"
+    },
+    {
+      "id": "dateDiff",
+      "name": "Date Difference",
+      "prompt": "Implement dateDiff that calculates the difference between two dates in a specified unit. Support units: milliseconds, seconds, minutes, hours, days. Calculate by getting the millisecond difference and dividing by appropriate constants (1000 for seconds, 60000 for minutes, 3600000 for hours, 86400000 for days). Return positive if date2 > date1, negative otherwise. Use Math.floor for whole units.",
+      "status": "passing"
+    },
+    {
+      "id": "dateDiffInDays",
+      "name": "Days Difference",
+      "prompt": "Implement dateDiffInDays as a specialized function that calculates whole day difference between two dates. Use the millisecond difference divided by 86400000 (ms per day) and apply Math.floor. Handle leap years correctly by relying on JavaScript's Date arithmetic. Return 0 for same dates.",
+      "status": "passing"
+    },
+    {
+      "id": "dateDiffInMonths",
+      "name": "Months Difference",
+      "prompt": "Implement dateDiffInMonths that calculates the whole month difference between two dates. Calculate by: (year2 - year1) * 12 + (month2 - month1), then adjust if day2 < day1 to get floor value. This handles partial months by not counting incomplete months.",
+      "status": "passing"
+    },
+    {
+      "id": "dateDiffInYears",
+      "name": "Years Difference",
+      "prompt": "Implement dateDiffInYears that calculates the whole year difference between two dates. Calculate the year difference and then check if date2's month/day is before date1's anniversary to determine if a full year has passed. Return floor value for partial years.",
+      "status": "pending"
+    },
+    {
+      "id": "addDays",
+      "name": "Add Days",
+      "prompt": "Implement addDays that returns a new Date with days added (or subtracted if negative). Create a copy of the input date to avoid mutation, then use setDate(getDate() + days). JavaScript Date handles month/year overflow automatically. Always return a new Date instance.",
+      "status": "pending"
+    },
+    {
+      "id": "addMonths",
+      "name": "Add Months",
+      "prompt": "Implement addMonths that returns a new Date with months added (or subtracted if negative). Create a copy of the input date, then set the month using setMonth(getMonth() + months). Handle month-end overflow: if original date is 31st and target month has 30 days, clamp to last day of target month. Check if the day changed unexpectedly and adjust accordingly.",
+      "status": "pending"
+    },
+    {
+      "id": "isValidDate",
+      "name": "Date Validation",
+      "prompt": "Implement isValidDate that checks if a value is a valid Date object. Return false for: null, undefined, non-Date objects, or Date objects where getTime() returns NaN (Invalid Date). Use instanceof Date check combined with !isNaN(date.getTime()) to verify validity. Handle edge cases like epoch date (new Date(0)) which is valid.",
+      "status": "pending"
+    }
+  ]
+}

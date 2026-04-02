@@ -1,0 +1,13 @@
+{
+  "name": "harness-demo",
+  "type": "module",
+  "scripts": {
+    "start": "tsx orchestrator.ts",
+    "reset": "tsx reset.ts",
+    "setup": "npm install && cd project && npm install"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "tsx": "^4.0.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "demo-project",
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --reporter verbose"
+  },
+  "devDependencies": {
+    "vitest": "^3.0.0"
+  }
+}
