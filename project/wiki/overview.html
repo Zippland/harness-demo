@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>项目概览 - Finance Agent (发仔) Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html" class="active">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html">数据模型</a></li>
+            <li><a href="sandbox.html">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html">前端界面</a></li>
+            <li><a href="skills.html">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+
+      <!-- ==================== 1. 项目简介 ==================== -->
+      <h1>Finance Agent（发仔）是什么？</h1>
+      <p>
+        Finance Agent（发仔）是字节跳动内部研发的财务数据分析服务，基于 AI Agent 架构，
+        接受自然语言查询，返回财务与运营数据洞察。用户无需掌握 SQL 或编程技能，
+        即可通过对话方式完成复杂的财务分析任务。
+      </p>
+
+      <h2>接口形态</h2>
+      <p>发仔提供两种原生接入方式，满足不同使用场景：</p>
+      <ul>
+        <li>
+          <strong>RESTful API + 前端 Web</strong>：标准 HTTP 接口配套 React Web 应用，
+          支持多轮对话、文件上传下载、流式响应与数据可视化。
+        </li>
+        <li>
+          <strong>飞书 Bot</strong>：深度集成字节跳动内部 IM 平台飞书，
+          用户在飞书群聊或私信中即可直接与发仔交互，无需切换工具。
+        </li>
+      </ul>
+
+      <blockquote>
+        <p>
+          <strong>项目定位</strong>：AI Agent 驱动的企业级财务分析平台——
+          将大语言模型的自然语言理解能力与结构化财务工具深度融合，
+          实现从数据查询到报告生成的全流程智能化。
+        </p>
+      </blockquote>
+
+      <!-- ==================== 2. 核心能力 ==================== -->
+      <h2>核心能力</h2>
+      <div class="card-grid">
+        <div class="card">
+          <span class="card-icon">🔄</span>
+          <p class="card-title">多轮对话 Agent</p>
+          <p class="card-desc">基于 LangGraph 的流式响应 Agent，支持工具调用与上下文记忆，多轮对话持续推理直至任务完成。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🛡️</span>
+          <p class="card-title">沙箱代码执行</p>
+          <p class="card-desc">集成 ByteAI Sandbox，支持 Python / Shell 安全隔离执行，数据分析代码在受控环境中运行，杜绝安全风险。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🗄️</span>
+          <p class="card-title">数据平台集成</p>
+          <p class="card-desc">原生对接 Aeolus、Coral、Finance Portal、CIS Core、Lark Sheets 等内部数据平台，统一查询入口。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">📁</span>
+          <p class="card-title">文件管理</p>
+          <p class="card-desc">支持文件上传与下载，自动解析 Excel、CSV、PDF 等常见财务文件格式，提取结构化数据供 Agent 使用。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">⚡</span>
+          <p class="card-title">Skills 插件系统</p>
+          <p class="card-desc">可扩展的工具插件体系，开发者可按规范快速接入新的数据源或分析能力，无需修改核心框架。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">💬</span>
+          <p class="card-title">飞书 Bot 集成</p>
+          <p class="card-desc">原生飞书 IM 访问支持，在飞书单聊、群聊中直接发起财务查询，消息卡片展示图表与报告。</p>
+        </div>
+        <div class="card">
+          <span class="card-icon">🔐</span>
+          <p class="card-title">多用户多工作区隔离</p>
+          <p class="card-desc">每位用户拥有独立工作区与会话空间，数据与文件严格隔离，满足企业级安全与权限管控要求。</p>
+        </div>
+      </div>
+
+      <!-- ==================== 3. 技术栈概览 ==================== -->
+      <h2>技术栈概览</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>层次</th>
+            <th>技术选型</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>后端语言</strong></td>
+            <td>Python 3.11</td>
+          </tr>
+          <tr>
+            <td><strong>后端框架</strong></td>
+            <td>FastAPI</td>
+          </tr>
+          <tr>
+            <td><strong>Agent 框架</strong></td>
+            <td>LangChain / LangGraph</td>
+          </tr>
+          <tr>
+            <td><strong>数据库</strong></td>
+            <td>MongoDB（持久化）、Redis（缓存与会话）</td>
+          </tr>
+          <tr>
+            <td><strong>代码执行</strong></td>
+            <td>ByteAI Sandbox</td>
+          </tr>
+          <tr>
+            <td><strong>前端框架</strong></td>
+            <td>React 19</td>
+          </tr>
+          <tr>
+            <td><strong>前端语言</strong></td>
+            <td>TypeScript</td>
+          </tr>
+          <tr>
+            <td><strong>构建工具</strong></td>
+            <td>Vite</td>
+          </tr>
+          <tr>
+            <td><strong>样式方案</strong></td>
+            <td>Tailwind CSS 4</td>
+          </tr>
+          <tr>
+            <td><strong>状态管理</strong></td>
+            <td>Zustand</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ==================== 4. 项目结构树 ==================== -->
+      <h2>项目结构</h2>
+      <p>以下是 <code>finance_agent/</code> 的主要目录结构及各模块职责说明：</p>
+      <pre><code>finance_agent/
+├── app/                        # 后端主应用（FastAPI）
+│   ├── api/                    #   路由层：RESTful 接口定义
+│   ├── agent/                  #   Agent 核心：LangGraph 循环、上下文管理
+│   ├── tools/                  #   工具注册中心：内置工具与 Skills 插件
+│   ├── sandbox/                #   沙箱执行器：ByteAI Sandbox 封装
+│   ├── integrations/           #   数据平台集成：Aeolus、Coral、CIS Core 等
+│   ├── lark/                   #   飞书 Bot：消息接收、卡片渲染、权限校验
+│   ├── models/                 #   数据模型：MongoDB ODM、Pydantic Schema
+│   └── core/                   #   基础设施：配置、日志、认证、异常处理
+│
+├── web/                        # 前端应用（React 19 + Vite）
+│   ├── src/
+│   │   ├── components/         #   UI 组件库
+│   │   ├── pages/              #   页面视图
+│   │   ├── stores/             #   Zustand 状态管理
+│   │   └── api/                #   前端 API 客户端
+│   └── public/                 #   静态资源
+│
+├── docs/                       # 项目文档（Wiki 源文件）
+│
+├── cronjob/                    # 定时任务脚本（数据同步、清理任务等）
+│
+├── scripts/                    # 运维与部署脚本（初始化、迁移、调试工具）
+│
+└── workspace/                  # 用户工作区（文件上传存储，按用户隔离）</code></pre>
+
+      <!-- ==================== 5. 快速链接 ==================== -->
+      <h2>快速链接</h2>
+      <div class="card-grid">
+        <a class="card" href="architecture.html">
+          <span class="card-icon">🏗️</span>
+          <p class="card-title">架构设计</p>
+          <p class="card-desc">系统整体架构、模块划分与数据流向详解。</p>
+        </a>
+        <a class="card" href="agent-loop.html">
+          <span class="card-icon">🔄</span>
+          <p class="card-title">Agent 循环</p>
+          <p class="card-desc">深入了解 Agent 的核心执行循环与推理机制。</p>
+        </a>
+        <a class="card" href="api.html">
+          <span class="card-icon">🌐</span>
+          <p class="card-title">API 接口</p>
+          <p class="card-desc">RESTful 接口文档、请求格式与流式响应协议。</p>
+        </a>
+        <a class="card" href="tools.html">
+          <span class="card-icon">🛠️</span>
+          <p class="card-title">工具系统</p>
+          <p class="card-desc">内置工具集合、工具注册与调用协议详解。</p>
+        </a>
+        <a class="card" href="sandbox.html">
+          <span class="card-icon">🛡️</span>
+          <p class="card-title">沙箱环境</p>
+          <p class="card-desc">代码安全隔离机制与沙箱架构说明。</p>
+        </a>
+        <a class="card" href="skills.html">
+          <span class="card-icon">⚡</span>
+          <p class="card-title">技能开发</p>
+          <p class="card-desc">如何为发仔编写自定义技能插件与扩展能力。</p>
+        </a>
+        <a class="card" href="frontend.html">
+          <span class="card-icon">🖥️</span>
+          <p class="card-title">前端界面</p>
+          <p class="card-desc">React 前端架构、组件设计与状态管理方案。</p>
+        </a>
+        <a class="card" href="dev-guide.html">
+          <span class="card-icon">📖</span>
+          <p class="card-title">开发指南</p>
+          <p class="card-desc">本地环境搭建、调试技巧与贡献规范。</p>
+        </a>
+      </div>
+
+    </main>
+  </div>
+</body>
+</html>

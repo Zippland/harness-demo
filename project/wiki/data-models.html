@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>数据模型 - Finance Agent Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html" class="active">数据模型</a></li>
+            <li><a href="sandbox.html">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html">前端界面</a></li>
+            <li><a href="skills.html">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+
+      <!-- ==================== 1. 存储架构概述 ==================== -->
+      <h1>数据模型</h1>
+      <p>
+        本文档详细介绍 Finance Agent（发仔）的数据存储设计，涵盖 MongoDB 集合结构、
+        Redis 缓存策略以及 TOS 对象存储路径规范。
+      </p>
+
+      <h2>存储架构概述</h2>
+      <p>
+        发仔采用三层存储架构，每层各司其职，相互协作：
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>存储层</th>
+            <th>技术选型</th>
+            <th>职责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>主持久化</strong></td>
+            <td>MongoDB（ByteDoc）</td>
+            <td>消息历史、会话元数据、文件元数据、技能注册信息的持久存储</td>
+          </tr>
+          <tr>
+            <td><strong>热缓存 / 实时通信</strong></td>
+            <td>Redis</td>
+            <td>活跃会话消息热缓存（TTL 2h）、分布式锁、SSE 事件流、任务取消信号</td>
+          </tr>
+          <tr>
+            <td><strong>对象存储</strong></td>
+            <td>TOS（字节跳动对象存储）</td>
+            <td>用户上传文件、Agent 产物（图表 / 报告）、Skills 技能包</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>MongoDB：主持久化</h3>
+      <p>
+        MongoDB 使用字节跳动内部的 <strong>ByteDoc</strong> 托管服务，存储所有结构化业务数据。
+        核心集合包括：<code>agent_workspaces</code>、<code>agent_sessions</code>、
+        <code>agent_messages</code>、<code>agent_skills</code>、<code>agent_files</code>、
+        <code>agent_shares</code>、<code>agent_traces</code>。
+      </p>
+
+      <h3>Redis：热缓存 + 实时通信</h3>
+      <p>Redis 承担四类职责：</p>
+      <ul>
+        <li>
+          <strong>活跃会话消息热缓存</strong>：将正在进行中的会话消息列表缓存于 Redis，
+          TTL 设置为 <strong>2 小时</strong>，避免每次推理都读取 MongoDB，显著降低延迟。
+        </li>
+        <li>
+          <strong>分布式锁</strong>：使用 <code>SET NX PX</code> 原语对会话加悲观锁，
+          保证同一会话同时只有一个写操作，防止消息乱序或重复处理。
+        </li>
+        <li>
+          <strong>SSE 事件流</strong>：Agent 推理过程中通过 <code>XADD</code> 将 token、
+          工具调用、工具结果等事件写入 Redis Stream，API 层通过 <code>XREAD BLOCK</code>
+          消费并推送给前端 EventSource。
+        </li>
+        <li>
+          <strong>取消信号</strong>：用户发起取消请求时，向对应 Redis Key 写入取消标志，
+          Agent 循环在每轮推理前检测该信号并提前终止。
+        </li>
+      </ul>
+
+      <h3>TOS：对象存储</h3>
+      <p>
+        TOS 存储所有二进制文件内容，按照固定路径规范组织，确保多租户隔离。
+        详细路径规范见本文末尾 <a href="#tos-paths">TOS 存储路径规范</a>。
+      </p>
+
+      <!-- ==================== 2. MongoDB 集合详情 ==================== -->
+      <h2>MongoDB 集合详情</h2>
+
+      <!-- ===== agent_workspaces ===== -->
+      <section id="agent_workspaces">
+        <h3>agent_workspaces</h3>
+        <p>
+          工作区是用户与 Agent 协作的独立环境，持久化保存用户文件树与已加载技能的状态。
+          每个用户可拥有多个工作区，工作区与沙箱实例（<code>sandbox_sid</code>）绑定。
+        </p>
+
+        <h4>字段说明</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>工作区唯一标识，MongoDB 自动生成</td>
+            </tr>
+            <tr>
+              <td><code>user_id</code></td>
+              <td>String</td>
+              <td>所属用户 ID，来源于 JWT Token</td>
+            </tr>
+            <tr>
+              <td><code>name</code></td>
+              <td>String</td>
+              <td>工作区名称，用户自定义，默认为"默认工作区"</td>
+            </tr>
+            <tr>
+              <td><code>sandbox_sid</code></td>
+              <td>String</td>
+              <td>绑定的沙箱实例 Session ID，用于代码执行环境恢复</td>
+            </tr>
+            <tr>
+              <td><code>files</code></td>
+              <td>Map&lt;String, FileEntry&gt;</td>
+              <td>工作区文件树，key 为相对路径，value 为文件元数据（见下方结构说明）</td>
+            </tr>
+            <tr>
+              <td><code>skills</code></td>
+              <td>Map&lt;String, SkillEntry&gt;</td>
+              <td>工作区已配置的技能，key 为 skill_id，value 为启用状态（见下方结构说明）</td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>String</td>
+              <td>工作区状态：<code>active</code>（正常）/ <code>archived</code>（已归档）</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>工作区创建时间（UTC）</td>
+            </tr>
+            <tr>
+              <td><code>updated_at</code></td>
+              <td>DateTime</td>
+              <td>最后更新时间（UTC），每次文件或技能变更时自动刷新</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4>files 字段结构（path → FileEntry）</h4>
+        <p>
+          <code>files</code> 是一个 Map，key 为文件在工作区内的相对路径（如 <code>data/report.xlsx</code>），
+          value 为 <code>FileEntry</code> 对象：
+        </p>
+        <pre><code>{
+  "data/report.xlsx": {
+    "file_uri": "tos://bucket/uploads/user_123/a1b2c3d4.xlsx",  // TOS 存储地址
+    "sha256": "e3b0c44298fc1c149afb...",                        // 文件内容哈希，用于去重与校验
+    "is_dir": false                                              // true 表示目录节点
+  },
+  "charts/": {
+    "file_uri": "",
+    "sha256": "",
+    "is_dir": true
+  }
+}</code></pre>
+
+        <h4>skills 字段结构（skill_id → SkillEntry）</h4>
+        <p>
+          <code>skills</code> 是一个 Map，key 为技能唯一标识，value 为该工作区中技能的配置状态：
+        </p>
+        <pre><code>{
+  "skill_stock_analysis": {
+    "enabled": true,              // 是否在此工作区中启用
+    "loaded_version": "1.2.0"    // 当前工作区加载的技能版本号
+  },
+  "skill_pdf_parser": {
+    "enabled": false,
+    "loaded_version": "0.9.1"
+  }
+}</code></pre>
+      </section>
+
+      <!-- ===== agent_sessions ===== -->
+      <section id="agent_sessions">
+        <h3>agent_sessions</h3>
+        <p>
+          会话集合记录用户与 Agent 的每一次对话会话的元数据。
+          <strong>同一会话同时只能处理一个任务</strong>——当会话处于
+          <code>running</code> 状态时，新的请求将被拒绝，直至当前任务完成或被取消。
+        </p>
+
+        <h4>字段说明</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>会话唯一标识</td>
+            </tr>
+            <tr>
+              <td><code>user_id</code></td>
+              <td>String</td>
+              <td>会话所属用户 ID</td>
+            </tr>
+            <tr>
+              <td><code>workspace_id</code></td>
+              <td>ObjectId</td>
+              <td>关联的工作区 ID</td>
+            </tr>
+            <tr>
+              <td><code>title</code></td>
+              <td>String</td>
+              <td>会话标题，首条消息发送后由 LLM 自动生成摘要标题</td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>String</td>
+              <td>会话状态枚举，见下方说明</td>
+            </tr>
+            <tr>
+              <td><code>message_count</code></td>
+              <td>Int</td>
+              <td>消息总数，冗余存储，用于快速分页展示</td>
+            </tr>
+            <tr>
+              <td><code>last_message_at</code></td>
+              <td>DateTime</td>
+              <td>最后一条消息的时间，用于会话列表排序</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>会话创建时间（UTC）</td>
+            </tr>
+            <tr>
+              <td><code>updated_at</code></td>
+              <td>DateTime</td>
+              <td>会话最后更新时间（UTC）</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4>status 枚举</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>枚举值</th>
+              <th>含义</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>active</code></td>
+              <td>空闲中</td>
+              <td>会话处于等待状态，可接受新的用户消息</td>
+            </tr>
+            <tr>
+              <td><code>running</code></td>
+              <td>执行中</td>
+              <td>Agent 正在处理任务，<strong>拒绝新请求</strong>，直至完成或取消</td>
+            </tr>
+            <tr>
+              <td><code>deleted</code></td>
+              <td>已删除</td>
+              <td>软删除状态，数据保留但不对用户展示，可用于审计</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4>索引</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>索引字段</th>
+              <th>类型</th>
+              <th>用途</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>user_id + created_at</code></td>
+              <td>复合索引（降序）</td>
+              <td>按用户分页查询会话列表，按创建时间倒序排列</td>
+            </tr>
+            <tr>
+              <td><code>user_id + status</code></td>
+              <td>复合索引</td>
+              <td>快速判断用户是否有正在运行的会话</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== agent_messages ===== -->
+      <section id="agent_messages">
+        <h3>agent_messages</h3>
+        <p>
+          消息集合是系统中<strong>最重要的集合</strong>，存储所有会话中每一条消息的完整内容。
+          消息内容（<code>content</code>）采用多态 Part 数组设计，可同时表达文本、文件、
+          思考过程、工具调用及工具结果等多种内容类型，完整还原 Agent 的推理与执行轨迹。
+        </p>
+
+        <h4>基础字段说明</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>消息唯一标识</td>
+            </tr>
+            <tr>
+              <td><code>session_id</code></td>
+              <td>ObjectId</td>
+              <td>所属会话 ID，关联 <code>agent_sessions._id</code></td>
+            </tr>
+            <tr>
+              <td><code>user_id</code></td>
+              <td>String</td>
+              <td>消息所属用户 ID，冗余存储，便于跨会话查询</td>
+            </tr>
+            <tr>
+              <td><code>role</code></td>
+              <td>String</td>
+              <td>消息角色：<code>user</code> / <code>assistant</code> / <code>system</code></td>
+            </tr>
+            <tr>
+              <td><code>content</code></td>
+              <td>Array&lt;Part&gt;</td>
+              <td>消息内容数组，由多个 Part 组成，支持多种类型混合（见下方 Part 类型说明）</td>
+            </tr>
+            <tr>
+              <td><code>metadata</code></td>
+              <td>Object</td>
+              <td>扩展元数据，如 token 用量、模型名称、压缩摘要标记等</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>消息创建时间（UTC）</td>
+            </tr>
+            <tr>
+              <td><code>updated_at</code></td>
+              <td>DateTime</td>
+              <td>消息最后更新时间（UTC），流式输出完成后更新</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h4>content 数组 Part 类型</h4>
+        <p>
+          每条消息的 <code>content</code> 字段是一个 Part 数组，通过 <code>type</code> 字段区分类型。
+          以下是所有支持的 Part 类型及其 JSON 格式：
+        </p>
+
+        <h5>TextPart — 文本内容</h5>
+        <pre><code>{
+  "type": "text",
+  "text": "根据您上传的财报数据，Q3 营收同比增长 23.5%，主要驱动力来自..."
+}</code></pre>
+
+        <h5>FilePart — 文件附件</h5>
+        <pre><code>{
+  "type": "file",
+  "file_uri": "tos://finance-agent-bucket/uploads/user_123/2024q3_report.xlsx",
+  "name": "2024q3_report.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "size": 204800
+}</code></pre>
+
+        <h5>ThinkingPart — 模型思考过程（扩展思考）</h5>
+        <pre><code>{
+  "type": "thinking",
+  "thinking": "用户想要分析 Q3 财报，我需要先读取 Excel 文件中的收入数据，\n然后计算同比增长率，最后生成可视化图表..."
+}</code></pre>
+
+        <h5>ToolUsePart — 工具调用请求</h5>
+        <pre><code>{
+  "type": "tool_use",
+  "id": "call_abc123xyz",
+  "name": "execute_python",
+  "input": {
+    "code": "import pandas as pd\ndf = pd.read_excel('/workspace/2024q3_report.xlsx')\nprint(df.head())"
+  }
+}</code></pre>
+
+        <h5>ToolResultPart — 工具执行结果</h5>
+        <pre><code>{
+  "type": "tool_result",
+  "tool_use_id": "call_abc123xyz",
+  "tool_name": "execute_python",
+  "status": "success",
+  "content": [
+    {
+      "type": "text",
+      "text": "   Quarter  Revenue  YoY_Growth\n0       Q1   1250.3       18.2%\n1       Q2   1380.7       21.1%\n2       Q3   1542.9       23.5%"
+    }
+  ],
+  "duration_ms": 1340
+}</code></pre>
+        <blockquote>
+          <p>
+            <code>status</code> 枚举值：<code>success</code>（执行成功）/
+            <code>error</code>（执行失败）/ <code>timeout</code>（执行超时）。
+            <br />
+            当 <code>status</code> 为 <code>error</code> 时，<code>content</code> 中包含详细的错误信息，
+            Agent 会根据错误信息自动重试或调整策略。
+          </p>
+        </blockquote>
+
+        <h4>用户消息 content 完整示例</h4>
+        <p>
+          用户上传文件并发送文本查询时，<code>content</code> 同时包含 FilePart 和 TextPart：
+        </p>
+        <pre><code>{
+  "_id": "ObjectId('665f1a2b3c4d5e6f7a8b9c0d')",
+  "session_id": "ObjectId('665f1a2b3c4d5e6f7a8b9c01')",
+  "user_id": "user_ByteUser_88881234",
+  "role": "user",
+  "content": [
+    {
+      "type": "file",
+      "file_uri": "tos://finance-agent-bucket/uploads/user_ByteUser_88881234/2024q3_report.xlsx",
+      "name": "2024q3_report.xlsx",
+      "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "size": 204800
+    },
+    {
+      "type": "text",
+      "text": "请帮我分析这份 Q3 财报，重点关注营收增长趋势，并生成可视化图表。"
+    }
+  ],
+  "metadata": {},
+  "created_at": "2024-06-04T09:30:00Z",
+  "updated_at": "2024-06-04T09:30:00Z"
+}</code></pre>
+
+        <h4>助手消息 content 完整示例</h4>
+        <p>
+          助手消息可能同时包含思考过程、工具调用和最终文本回复，按执行顺序排列：
+        </p>
+        <pre><code>{
+  "_id": "ObjectId('665f1a2b3c4d5e6f7a8b9c0e')",
+  "session_id": "ObjectId('665f1a2b3c4d5e6f7a8b9c01')",
+  "user_id": "user_ByteUser_88881234",
+  "role": "assistant",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "用户上传了 Q3 财报 Excel 文件，需要分析营收趋势并生成图表。\n步骤：1) 读取 Excel 数据；2) 计算同比增长；3) 用 matplotlib 生成折线图。"
+    },
+    {
+      "type": "tool_use",
+      "id": "call_abc123xyz",
+      "name": "execute_python",
+      "input": {
+        "code": "import pandas as pd\nimport matplotlib.pyplot as plt\n\ndf = pd.read_excel('/workspace/2024q3_report.xlsx')\nfig, ax = plt.subplots(figsize=(10, 6))\nax.plot(df['Quarter'], df['Revenue'], marker='o')\nax.set_title('Q3 营收趋势')\nplt.savefig('/workspace/charts/revenue_trend.png', dpi=150)\nprint(df[['Quarter','Revenue','YoY_Growth']].to_string())"
+      }
+    },
+    {
+      "type": "tool_result",
+      "tool_use_id": "call_abc123xyz",
+      "tool_name": "execute_python",
+      "status": "success",
+      "content": [
+        {
+          "type": "text",
+          "text": "   Quarter  Revenue YoY_Growth\n0       Q1   1250.3      18.2%\n1       Q2   1380.7      21.1%\n2       Q3   1542.9      23.5%"
+        },
+        {
+          "type": "file",
+          "file_uri": "tos://finance-agent-bucket/artifacts/user_ByteUser_88881234/charts/revenue_trend.png",
+          "name": "revenue_trend.png",
+          "mime_type": "image/png",
+          "size": 98304
+        }
+      ],
+      "duration_ms": 2150
+    },
+    {
+      "type": "text",
+      "text": "分析完成！以下是 2024 年 Q3 营收趋势摘要：\n\n- **Q1**：营收 12.5 亿，同比增长 **18.2%**\n- **Q2**：营收 13.8 亿，同比增长 **21.1%**\n- **Q3**：营收 15.4 亿，同比增长 **23.5%**（本季度最优）\n\n增长势头持续加速，Q3 创下近三季度最高增速。可视化图表已生成，请查看附件。"
+    }
+  ],
+  "metadata": {
+    "model": "doubao-pro-32k",
+    "input_tokens": 3842,
+    "output_tokens": 618,
+    "total_tokens": 4460
+  },
+  "created_at": "2024-06-04T09:30:05Z",
+  "updated_at": "2024-06-04T09:30:12Z"
+}</code></pre>
+
+        <h4>索引</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>索引字段</th>
+              <th>类型</th>
+              <th>用途</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>session_id + created_at</code></td>
+              <td>复合索引（升序）</td>
+              <td>按会话拉取消息历史，按时间顺序排列</td>
+            </tr>
+            <tr>
+              <td><code>user_id + created_at</code></td>
+              <td>复合索引（降序）</td>
+              <td>跨会话查询用户消息历史</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== agent_skills ===== -->
+      <section id="agent_skills">
+        <h3>agent_skills</h3>
+        <p>
+          技能集合管理所有已注册的 Agent 技能包，包括内置技能和用户自定义技能。
+          每个技能可有多个版本（<code>versions</code> 数组），支持版本管理与灰度发布。
+        </p>
+
+        <h4>字段说明</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>String</td>
+              <td>技能唯一标识，人类可读，如 <code>skill_stock_analysis</code></td>
+            </tr>
+            <tr>
+              <td><code>name</code></td>
+              <td>String</td>
+              <td>技能展示名称，如"股票分析助手"</td>
+            </tr>
+            <tr>
+              <td><code>description</code></td>
+              <td>String</td>
+              <td>技能功能描述，注入 LLM System Prompt 帮助模型决策是否使用该技能</td>
+            </tr>
+            <tr>
+              <td><code>cur_version</code></td>
+              <td>String</td>
+              <td>当前稳定版本号（SemVer），新工作区默认加载此版本</td>
+            </tr>
+            <tr>
+              <td><code>type</code></td>
+              <td>String</td>
+              <td>技能类型：<code>builtin</code>（内置）/ <code>custom</code>（用户自定义）</td>
+            </tr>
+            <tr>
+              <td><code>owner_id</code></td>
+              <td>String</td>
+              <td>技能创建者用户 ID，内置技能为系统保留值 <code>system</code></td>
+            </tr>
+            <tr>
+              <td><code>scope</code></td>
+              <td>String</td>
+              <td>可见范围：<code>public</code>（所有用户）/ <code>private</code>（仅创建者）/ <code>team</code>（团队内）</td>
+            </tr>
+            <tr>
+              <td><code>scope_id</code></td>
+              <td>String</td>
+              <td>当 <code>scope</code> 为 <code>team</code> 时，记录对应的团队 ID</td>
+            </tr>
+            <tr>
+              <td><code>versions</code></td>
+              <td>Array&lt;VersionEntry&gt;</td>
+              <td>历史版本列表，每个版本记录版本号、TOS 包路径、发布时间及变更说明</td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>String</td>
+              <td>技能状态：<code>active</code>（可用）/ <code>deprecated</code>（已废弃）/ <code>draft</code>（草稿）</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== agent_files ===== -->
+      <section id="agent_files">
+        <h3>agent_files</h3>
+        <p>
+          文件集合存储用户上传文件和 Agent 产物的元数据，实际二进制内容存储于 TOS。
+          元数据与 TOS 路径解耦，支持文件重命名、移动而不修改 TOS 存储位置。
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>文件唯一标识</td>
+            </tr>
+            <tr>
+              <td><code>user_id</code></td>
+              <td>String</td>
+              <td>文件所属用户 ID</td>
+            </tr>
+            <tr>
+              <td><code>workspace_id</code></td>
+              <td>ObjectId</td>
+              <td>文件所在工作区 ID</td>
+            </tr>
+            <tr>
+              <td><code>session_id</code></td>
+              <td>ObjectId</td>
+              <td>文件来源会话 ID（可选，Agent 产物关联会话）</td>
+            </tr>
+            <tr>
+              <td><code>name</code></td>
+              <td>String</td>
+              <td>文件原始名称</td>
+            </tr>
+            <tr>
+              <td><code>file_uri</code></td>
+              <td>String</td>
+              <td>TOS 存储路径，格式见路径规范</td>
+            </tr>
+            <tr>
+              <td><code>mime_type</code></td>
+              <td>String</td>
+              <td>文件 MIME 类型，如 <code>application/vnd.ms-excel</code></td>
+            </tr>
+            <tr>
+              <td><code>size</code></td>
+              <td>Int64</td>
+              <td>文件大小（字节）</td>
+            </tr>
+            <tr>
+              <td><code>sha256</code></td>
+              <td>String</td>
+              <td>文件内容 SHA-256 哈希，用于完整性校验与去重</td>
+            </tr>
+            <tr>
+              <td><code>source</code></td>
+              <td>String</td>
+              <td>文件来源：<code>upload</code>（用户上传）/ <code>artifact</code>（Agent 产物）</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>文件创建时间（UTC）</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== agent_shares ===== -->
+      <section id="agent_shares">
+        <h3>agent_shares</h3>
+        <p>
+          分享集合管理会话的外部分享记录，用户可将特定会话生成分享链接，
+          通过 <code>token</code> 实现无需登录的只读访问。
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>分享记录唯一标识</td>
+            </tr>
+            <tr>
+              <td><code>session_id</code></td>
+              <td>ObjectId</td>
+              <td>被分享的会话 ID</td>
+            </tr>
+            <tr>
+              <td><code>owner_id</code></td>
+              <td>String</td>
+              <td>分享创建者用户 ID</td>
+            </tr>
+            <tr>
+              <td><code>token</code></td>
+              <td>String</td>
+              <td>分享访问令牌（URL-safe 随机字符串，32 字节），用于构造分享链接</td>
+            </tr>
+            <tr>
+              <td><code>expires_at</code></td>
+              <td>DateTime</td>
+              <td>分享链接过期时间，<code>null</code> 表示永不过期</td>
+            </tr>
+            <tr>
+              <td><code>view_count</code></td>
+              <td>Int</td>
+              <td>链接访问次数统计</td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>String</td>
+              <td>分享状态：<code>active</code>（有效）/ <code>revoked</code>（已撤销）</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>分享创建时间（UTC）</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ===== agent_traces ===== -->
+      <section id="agent_traces">
+        <h3>agent_traces</h3>
+        <p>
+          追踪集合记录每次 Agent 任务执行的详细追踪信息，用于性能分析、问题排查与用量统计。
+          每条追踪记录对应一次完整的用户请求到 Agent 响应的全过程。
+        </p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>字段名</th>
+              <th>类型</th>
+              <th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>_id</code></td>
+              <td>ObjectId</td>
+              <td>追踪记录唯一标识</td>
+            </tr>
+            <tr>
+              <td><code>session_id</code></td>
+              <td>ObjectId</td>
+              <td>关联会话 ID</td>
+            </tr>
+            <tr>
+              <td><code>user_id</code></td>
+              <td>String</td>
+              <td>执行用户 ID</td>
+            </tr>
+            <tr>
+              <td><code>trigger_message_id</code></td>
+              <td>ObjectId</td>
+              <td>触发本次执行的用户消息 ID</td>
+            </tr>
+            <tr>
+              <td><code>loops</code></td>
+              <td>Int</td>
+              <td>Agent 主循环迭代次数</td>
+            </tr>
+            <tr>
+              <td><code>tool_calls</code></td>
+              <td>Array&lt;Object&gt;</td>
+              <td>本次执行中所有工具调用的摘要（工具名、耗时、状态）</td>
+            </tr>
+            <tr>
+              <td><code>total_input_tokens</code></td>
+              <td>Int</td>
+              <td>本次执行累计输入 Token 数（所有轮次之和）</td>
+            </tr>
+            <tr>
+              <td><code>total_output_tokens</code></td>
+              <td>Int</td>
+              <td>本次执行累计输出 Token 数（所有轮次之和）</td>
+            </tr>
+            <tr>
+              <td><code>duration_ms</code></td>
+              <td>Int64</td>
+              <td>任务总耗时（毫秒），从接收用户消息到发出 done 事件</td>
+            </tr>
+            <tr>
+              <td><code>status</code></td>
+              <td>String</td>
+              <td>执行结果：<code>completed</code>（正常完成）/ <code>cancelled</code>（用户取消）/ <code>error</code>（异常终止）</td>
+            </tr>
+            <tr>
+              <td><code>error</code></td>
+              <td>String</td>
+              <td>当 <code>status</code> 为 <code>error</code> 时记录错误详情</td>
+            </tr>
+            <tr>
+              <td><code>created_at</code></td>
+              <td>DateTime</td>
+              <td>追踪记录创建时间（UTC）</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ==================== 3. TOS 存储路径规范 ==================== -->
+      <h2 id="tos-paths">TOS 存储路径规范</h2>
+      <p>
+        所有存入 TOS 的文件均遵循统一的路径命名规范，确保按业务类型隔离存储、
+        便于权限管控与生命周期策略配置（如过期清理）。
+      </p>
+      <p>
+        TOS Bucket 根地址：<code>tos://finance-agent-bucket/</code>
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>路径规范</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>用户上传文件</strong></td>
+            <td><code>uploads/{user_id}/{file_id}/{filename}</code></td>
+            <td>用户通过前端或 API 上传的原始文件（Excel、CSV、PDF 等），按用户 ID 隔离</td>
+          </tr>
+          <tr>
+            <td><strong>Agent 产物</strong></td>
+            <td><code>artifacts/{user_id}/{session_id}/{filename}</code></td>
+            <td>Agent 执行代码后生成的输出文件（图表、报告等），按会话维度组织，便于关联溯源</td>
+          </tr>
+          <tr>
+            <td><strong>Skills 技能包</strong></td>
+            <td><code>skills/{name}/{version}.zip</code></td>
+            <td>技能开发者发布的技能压缩包，按技能名称和版本号组织，支持多版本共存</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>路径示例</h3>
+      <pre><code># 用户上传的财报文件
+tos://finance-agent-bucket/uploads/user_ByteUser_88881234/a1b2c3d4e5f6/2024q3_report.xlsx
+
+# Agent 生成的营收趋势图
+tos://finance-agent-bucket/artifacts/user_ByteUser_88881234/665f1a2b3c4d5e6f7a8b9c01/revenue_trend.png
+
+# 股票分析技能包 v1.2.0
+tos://finance-agent-bucket/skills/skill_stock_analysis/1.2.0.zip</code></pre>
+
+      <blockquote>
+        <p>
+          <strong>安全策略</strong>：所有文件访问均通过 <strong>Pre-signed URL</strong> 鉴权，
+          签名有效期默认 <strong>1 小时</strong>，到期后链接自动失效，防止未授权访问。
+          前端展示文件时，后端实时生成签名 URL 返回，不在数据库中持久化签名链接。
+        </p>
+      </blockquote>
+
+    </main>
+  </div>
+</body>
+</html>

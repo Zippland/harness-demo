@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>前端架构 - Finance Agent (发仔) Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html">数据模型</a></li>
+            <li><a href="sandbox.html">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html" class="active">前端界面</a></li>
+            <li><a href="skills.html">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+
+      <!-- ==================== 1. 技术栈 ==================== -->
+      <h1>前端架构</h1>
+      <p>
+        Finance Agent（发仔）的前端基于 <strong>React 19</strong> 构建，采用现代化的工程化体系，
+        通过 Vite 实现极速开发体验，Zustand 管理全局状态，TipTap 支持富文本编辑，
+        整体架构遵循「功能域划分」原则，各功能域独立封装、按需加载。
+      </p>
+
+      <h2>技术栈</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>技术</th>
+            <th>版本</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>React</strong></td>
+            <td>19</td>
+            <td>UI 框架，利用并发渲染与 Server Components 特性提升响应速度</td>
+          </tr>
+          <tr>
+            <td><strong>TypeScript</strong></td>
+            <td>5.9</td>
+            <td>全量静态类型，strict 模式，确保类型安全与可维护性</td>
+          </tr>
+          <tr>
+            <td><strong>Vite</strong></td>
+            <td>7</td>
+            <td>构建工具，原生 ESM + esbuild 极速 HMR，生产环境 Rollup 打包</td>
+          </tr>
+          <tr>
+            <td><strong>Tailwind CSS</strong></td>
+            <td>4</td>
+            <td>原子化 CSS，JIT 引擎按需生成样式，支持暗色主题切换</td>
+          </tr>
+          <tr>
+            <td><strong>Zustand</strong></td>
+            <td>5</td>
+            <td>轻量全局状态管理，替代 Redux，配合 immer 实现不可变更新</td>
+          </tr>
+          <tr>
+            <td><strong>react-router-dom</strong></td>
+            <td>7</td>
+            <td>客户端路由，支持 lazy() 代码分割与嵌套路由</td>
+          </tr>
+          <tr>
+            <td><strong>TipTap</strong></td>
+            <td>2</td>
+            <td>富文本编辑器，基于 ProseMirror，用于消息输入与文档编辑</td>
+          </tr>
+          <tr>
+            <td><strong>Vitest</strong></td>
+            <td>—</td>
+            <td>单元测试框架，与 Vite 共享配置，支持 jsdom 环境测试 React 组件</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ==================== 2. 目录结构 ==================== -->
+      <h2>目录结构</h2>
+      <p>
+        前端源码位于 <code>web/src/</code>，采用「<strong>功能域优先</strong>」的目录组织策略。
+        全局共享的能力（组件、Hooks、Store）置于顶层，各功能域（<code>admin/</code>、<code>home/</code> 等）
+        封装各自的页面、组件与逻辑，功能域之间不直接相互引用。
+      </p>
+      <pre><code>web/src/
+├── pages/                  # 顶层路由入口（与 react-router-dom 路由表对应）
+│   ├── AgentPage.tsx       #   /agent — 主聊天界面入口
+│   ├── WorkspacePage.tsx   #   /agent/workspace/:workspaceId — 工作区详情
+│   ├── AdminPage.tsx       #   /agent/admin/* — 管理后台入口
+│   ├── OnboardingPage.tsx  #   /agent/onboarding — 引导流程入口
+│   └── SharePage.tsx       #   /agent/share/:shareToken — 分享页入口
+│
+├── components/             # 全局共享组件（跨功能域复用）
+│   ├── StreamingText/      #   Markdown 流式渲染组件
+│   ├── InlineFileWidget/   #   文件附件卡片
+│   ├── FilePreview/        #   图片 / PDF / CSV 预览
+│   ├── FileTree/           #   工作区文件浏览器
+│   ├── SkillMarketplace/   #   Skills 市场
+│   ├── CommandPalette/     #   命令搜索面板
+│   ├── Toast/              #   Toast 通知渲染层
+│   └── Spinner/            #   通用 Loading 指示器
+│
+├── hooks/                  # 全局 Hooks（无业务副作用，可跨功能域使用）
+│   ├── useSSE.ts           #   SSE 连接生命周期管理
+│   ├── useFileUpload.ts    #   文件上传封装
+│   └── useDebounce.ts      #   通用防抖 Hook
+│
+├── stores/                 # Zustand 全局 Store
+│   ├── chatStore.ts        #   消息列表、会话状态、SSE 连接
+│   ├── workspaceStore.ts   #   工作区、文件索引
+│   ├── profileStore.ts     #   当前登录用户
+│   ├── settingsStore.ts    #   用户偏好（主题等）
+│   ├── toastStore.ts       #   Toast 通知
+│   ├── traceStore.ts       #   执行 Trace
+│   └── storeHelpers.ts     #   withLoading() 等辅助函数
+│
+├── types/                  # TypeScript 类型定义（纯类型，不含运行时代码）
+│   ├── chat.ts             #   消息、会话相关类型
+│   ├── workspace.ts        #   工作区、文件树类型
+│   ├── sse.ts              #   SSE 事件类型
+│   └── api.ts              #   API 响应通用类型
+│
+├── utils/                  # 工具函数（纯函数，无副作用）
+│   ├── sse.ts              #   SSE 连接与事件解析
+│   ├── markdown.ts         #   Markdown 解析辅助
+│   ├── format.ts           #   日期、数字、文件大小格式化
+│   └── request.ts          #   fetch 封装，统一处理鉴权与错误
+│
+├── admin/                  # 管理后台功能域
+│   ├── pages/              #   管理后台各子页面
+│   ├── components/         #   管理后台专用组件
+│   └── hooks/              #   管理后台专用 Hooks
+│
+├── home/                   # 首页功能域
+│   ├── components/         #   首页专用组件（会话列表、欢迎屏等）
+│   └── hooks/              #   首页专用 Hooks
+│
+├── guide/                  # 引导流程功能域（Onboarding）
+│   ├── steps/              #   各引导步骤组件
+│   └── hooks/              #   引导状态管理 Hooks
+│
+└── share/                  # 分享页功能域
+    ├── components/         #   分享页专用组件（只读视图）
+    └── hooks/              #   分享 Token 解析 Hooks</code></pre>
+
+      <!-- ==================== 3. 路由设计 ==================== -->
+      <h2>路由设计</h2>
+      <p>
+        路由基于 <strong>react-router-dom v7</strong>，所有一级页面均挂载在 <code>/agent</code>
+        前缀下，通过 <strong><code>lazy()</code> + <code>&lt;Suspense&gt;</code></strong>
+        实现路由级代码分割，确保首屏只加载当前路由所需的 JS Bundle。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>路径</th>
+            <th>页面组件</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>/agent</code></td>
+            <td><code>AgentPage</code></td>
+            <td>主聊天界面，展示会话列表与消息流；未登录时重定向至登录页</td>
+          </tr>
+          <tr>
+            <td><code>/agent/workspace/:workspaceId</code></td>
+            <td><code>WorkspacePage</code></td>
+            <td>工作区详情页，包含文件树、代码查看与 Agent 执行面板</td>
+          </tr>
+          <tr>
+            <td><code>/agent/admin/*</code></td>
+            <td><code>AdminPage</code></td>
+            <td>管理后台，包含用户管理、Skills 配置、系统监控等子路由；需管理员权限</td>
+          </tr>
+          <tr>
+            <td><code>/agent/onboarding</code></td>
+            <td><code>OnboardingPage</code></td>
+            <td>新用户引导流程，完成后写入 profileStore 并跳转至主页</td>
+          </tr>
+          <tr>
+            <td><code>/agent/share/:shareToken</code></td>
+            <td><code>SharePage</code></td>
+            <td>会话分享只读页，无需登录即可访问，通过 shareToken 鉴权</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>代码分割策略</h3>
+      <p>
+        所有顶层路由组件均通过 <code>React.lazy()</code> 动态导入，外层用
+        <code>&lt;Suspense fallback={&lt;Spinner /&gt;}&gt;</code> 包裹，
+        Vite 会自动将每个 <code>lazy()</code> 边界拆分为独立 Chunk，
+        仅在用户首次导航到对应路由时按需加载：
+      </p>
+      <pre><code>import { lazy, Suspense } from 'react';
+import { createBrowserRouter, RouterProvider } from 'react-router-dom';
+import Spinner from '@/components/Spinner';
+
+const AgentPage      = lazy(() =&gt; import('@/pages/AgentPage'));
+const WorkspacePage  = lazy(() =&gt; import('@/pages/WorkspacePage'));
+const AdminPage      = lazy(() =&gt; import('@/pages/AdminPage'));
+const OnboardingPage = lazy(() =&gt; import('@/pages/OnboardingPage'));
+const SharePage      = lazy(() =&gt; import('@/pages/SharePage'));
+
+const router = createBrowserRouter([
+  {
+    path: '/agent',
+    element: &lt;Suspense fallback={&lt;Spinner /&gt;}&gt;&lt;AgentPage /&gt;&lt;/Suspense&gt;,
+  },
+  {
+    path: '/agent/workspace/:workspaceId',
+    element: &lt;Suspense fallback={&lt;Spinner /&gt;}&gt;&lt;WorkspacePage /&gt;&lt;/Suspense&gt;,
+  },
+  {
+    path: '/agent/admin/*',
+    element: &lt;Suspense fallback={&lt;Spinner /&gt;}&gt;&lt;AdminPage /&gt;&lt;/Suspense&gt;,
+  },
+  {
+    path: '/agent/onboarding',
+    element: &lt;Suspense fallback={&lt;Spinner /&gt;}&gt;&lt;OnboardingPage /&gt;&lt;/Suspense&gt;,
+  },
+  {
+    path: '/agent/share/:shareToken',
+    element: &lt;Suspense fallback={&lt;Spinner /&gt;}&gt;&lt;SharePage /&gt;&lt;/Suspense&gt;,
+  },
+]);
+
+export default function App() {
+  return &lt;RouterProvider router={router} /&gt;;
+}</code></pre>
+
+      <!-- ==================== 4. 全局 Store ==================== -->
+      <h2>全局 Store（Zustand）</h2>
+      <p>
+        全局状态由 6 个职责单一的 Zustand Store 管理，每个 Store 对应一个独立文件，
+        Store 之间不直接互相订阅，通过组件层或 Hooks 层协调交互。
+        所有 Store 均启用 <strong>immer 中间件</strong>以支持不可变更新，
+        敏感状态（如会话 token）不持久化到 localStorage。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Store</th>
+            <th>文件</th>
+            <th>职责</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>chatStore</code></td>
+            <td><code>chatStore.ts</code></td>
+            <td>消息列表、会话状态、SSE 连接管理；包含流式消息 reducer，处理 token / tool_call / done 等事件</td>
+          </tr>
+          <tr>
+            <td><code>workspaceStore</code></td>
+            <td><code>workspaceStore.ts</code></td>
+            <td>工作区元数据、文件索引树、当前打开文件；负责文件上传与删除的状态同步</td>
+          </tr>
+          <tr>
+            <td><code>profileStore</code></td>
+            <td><code>profileStore.ts</code></td>
+            <td>当前登录用户的 ID、昵称、头像、角色权限；登录 / 登出时清空</td>
+          </tr>
+          <tr>
+            <td><code>settingsStore</code></td>
+            <td><code>settingsStore.ts</code></td>
+            <td>用户偏好配置，包含主题（light / dark / system）、语言、消息字体大小等；持久化至 localStorage</td>
+          </tr>
+          <tr>
+            <td><code>toastStore</code></td>
+            <td><code>toastStore.ts</code></td>
+            <td>Toast 通知队列；提供 <code>toast.success()</code>、<code>toast.error()</code>、<code>toast.info()</code> 快捷方法</td>
+          </tr>
+          <tr>
+            <td><code>traceStore</code></td>
+            <td><code>traceStore.ts</code></td>
+            <td>Agent 执行 Trace 面板数据；记录工具调用链路、耗时与中间结果，供调试面板展示</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ==================== 5. 核心组件说明 ==================== -->
+      <h2>核心组件说明</h2>
+
+      <section id="streaming-text">
+        <h3>StreamingText</h3>
+        <p>
+          <code>StreamingText</code> 是消息渲染的核心组件，负责将 Agent 返回的 Markdown 文本
+          实时解析并渲染为结构化 UI。组件支持以下 <strong>7 种内容类型</strong>的富展示：
+        </p>
+        <ul>
+          <li><strong>普通文本</strong>：支持 Markdown 标准语法（标题、加粗、斜体、列表等）</li>
+          <li><strong>代码块</strong>：语法高亮（基于 highlight.js），支持一键复制，可折叠长代码</li>
+          <li><strong>图片</strong>：内联展示，点击可触发 <code>FilePreview</code> 全屏预览</li>
+          <li><strong>文件链接</strong>：渲染为 <code>InlineFileWidget</code> 卡片，展示文件名、大小与下载按钮</li>
+          <li><strong>表格</strong>：响应式表格渲染，超宽时横向滚动，超长时虚拟滚动</li>
+          <li><strong>数学公式</strong>：通过 KaTeX 渲染 LaTeX 公式（<code>$...$</code> 内联，<code>$$...$$</code> 块级）</li>
+          <li><strong>工具调用卡片</strong>：展示 Agent 的 tool_call / tool_result 步骤，可展开查看原始参数与输出</li>
+        </ul>
+        <p>
+          流式渲染期间，组件通过增量 diff 策略只更新新增节点，避免全量重渲染导致的闪烁。
+        </p>
+      </section>
+
+      <section id="inline-file-widget">
+        <h3>InlineFileWidget</h3>
+        <p>
+          文件附件卡片组件，展示单个文件的元数据信息：文件类型图标、文件名、文件大小。
+          卡片内置「预览」与「下载」两个操作按钮。点击预览时根据 MIME 类型分发至
+          <code>FilePreview</code> 组件；点击下载时通过签名 URL 触发浏览器下载，
+          下载过程中按钮展示 loading 状态（遵循操作类接口 loading 规范）。
+        </p>
+      </section>
+
+      <section id="file-preview">
+        <h3>FilePreview</h3>
+        <p>
+          文件预览模态框，根据文件类型选择对应的渲染策略：
+        </p>
+        <ul>
+          <li><strong>图片（PNG / JPG / SVG）</strong>：全屏展示，支持缩放与拖拽</li>
+          <li><strong>PDF</strong>：基于 <code>react-pdf</code> 分页渲染，支持翻页与缩放</li>
+          <li><strong>CSV / Excel</strong>：解析为表格数据后以虚拟滚动表格展示，支持列排序</li>
+          <li><strong>其他类型</strong>：展示文件元数据与下载入口，不做内容渲染</li>
+        </ul>
+      </section>
+
+      <section id="file-tree">
+        <h3>FileTree</h3>
+        <p>
+          工作区文件浏览器，以树形结构展示 <code>workspaceStore</code> 中的文件索引。
+          支持展开 / 折叠目录、单击选中文件（更新 <code>workspaceStore.activeFileId</code>）、
+          右键上下文菜单（重命名、删除、下载）。文件状态（上传中 / 处理中 / 就绪）
+          通过图标颜色区分，上传进度通过节点内 progress bar 实时展示。
+        </p>
+      </section>
+
+      <section id="skill-marketplace">
+        <h3>SkillMarketplace</h3>
+        <p>
+          Skills 市场面板，展示当前工作区已启用及可安装的 Skills 列表。
+          每个 Skill 卡片展示名称、描述、版本与状态。
+          启用 / 禁用操作通过 <code>withLoading()</code> 包裹，操作期间卡片进入 loading 状态，
+          接口成功响应后才更新 UI（禁止乐观更新）。
+        </p>
+      </section>
+
+      <section id="command-palette">
+        <h3>CommandPalette</h3>
+        <p>
+          命令搜索面板，通过 <kbd>⌘K</kbd>（macOS）/ <kbd>Ctrl+K</kbd>（Windows）快捷键唤起。
+          支持模糊搜索以下资源：历史会话、工作区文件、可用 Skills、导航页面。
+          搜索结果按类别分组展示，键盘上下方向键导航，回车执行选中项。
+          搜索逻辑运行在 Web Worker 中，避免阻塞主线程。
+        </p>
+      </section>
+
+      <!-- ==================== 6. SSE 流式处理 ==================== -->
+      <h2>SSE 流式处理</h2>
+      <p>
+        前端通过 <strong><code>utils/sse.ts</code> → <code>chatStore.ts</code> reducer</strong>
+        两层管道消费后端推送的 SSE 事件，实现流式消息的增量渲染。
+      </p>
+
+      <h3>utils/sse.ts — 连接管理</h3>
+      <p>
+        <code>sse.ts</code> 封装原生 <code>EventSource</code> API，提供带鉴权支持的 SSE 连接工厂函数。
+        由于原生 <code>EventSource</code> 不支持自定义请求头，此处改用
+        <code>fetch</code> + <code>ReadableStream</code> 模拟 SSE，
+        将 <code>Authorization: Bearer &lt;token&gt;</code> 注入请求头：
+      </p>
+      <pre><code>// utils/sse.ts
+export async function* createSSEStream(
+  url: string,
+  token: string,
+  signal: AbortSignal,
+): AsyncGenerator&lt;SSEEvent&gt; {
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal,
+  });
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() ?? '';
+    for (const chunk of lines) {
+      const dataLine = chunk.split('\n').find(l =&gt; l.startsWith('data:'));
+      if (dataLine) yield JSON.parse(dataLine.slice(5)) as SSEEvent;
+    }
+  }
+}</code></pre>
+
+      <h3>chatStore.ts — reducer 模式状态管理</h3>
+      <p>
+        <code>chatStore</code> 内置 <code>handleSSEEvent()</code> reducer，
+        按事件类型分发消息状态更新，保证消息列表的不可变更新与最小重渲染范围：
+      </p>
+      <pre><code>// stores/chatStore.ts（片段）
+function handleSSEEvent(state: ChatState, event: SSEEvent): ChatState {
+  switch (event.type) {
+    case 'token':
+      // 追加 token 到当前流式消息末尾
+      return appendTokenToLastMessage(state, event.data);
+    case 'tool_call':
+      // 插入工具调用卡片（pending 状态）
+      return appendToolCallMessage(state, event.data);
+    case 'tool_result':
+      // 更新对应工具调用卡片为 done 状态
+      return resolveToolCallMessage(state, event.data);
+    case 'error':
+      // 标记当前消息为 error 状态，展示错误提示
+      return markMessageError(state, event.data);
+    case 'done':
+      // 流结束，将流式消息转为静态消息，关闭 SSE 连接
+      return finalizeStreamingMessage(state);
+    default:
+      return state;
+  }
+}</code></pre>
+
+      <p>
+        <code>startChat()</code> action 负责创建 SSE 流并驱动 reducer 循环：
+      </p>
+      <pre><code>// stores/chatStore.ts（片段）
+startChat: async (sessionId: string, content: string) =&gt; {
+  const abortController = new AbortController();
+  set({ abortController, isStreaming: true });
+
+  const token = profileStore.getState().accessToken;
+  const stream = createSSEStream(`/api/chat/${sessionId}`, token, abortController.signal);
+
+  for await (const event of stream) {
+    set(state =&gt; handleSSEEvent(state, event));
+    if (event.type === 'done') break;
+  }
+
+  set({ isStreaming: false, abortController: null });
+},</code></pre>
+
+      <!-- ==================== 7. 开发规范要点 ==================== -->
+      <h2>开发规范要点</h2>
+
+      <h3>操作类接口必须有 loading 状态</h3>
+      <p>
+        所有触发后端写操作（创建、更新、删除）的函数，
+        必须在调用前将对应状态置为 <code>loading: true</code>，
+        接口返回（无论成功或失败）后恢复为 <code>loading: false</code>。
+        组件侧根据 loading 状态禁用按钮或展示 Spinner，防止用户重复提交。
+      </p>
+
+      <h3>使用 withLoading() 辅助函数</h3>
+      <p>
+        <code>storeHelpers.ts</code> 提供 <code>withLoading()</code> 高阶函数，
+        自动管理 loading 状态的开启与关闭，并统一捕获异常后通过
+        <code>toastStore</code> 展示错误提示：
+      </p>
+      <pre><code>// stores/storeHelpers.ts
+export function withLoading&lt;T&gt;(
+  set: (partial: Partial&lt;{ loading: boolean }&gt;) =&gt; void,
+  fn: () =&gt; Promise&lt;T&gt;,
+): Promise&lt;T | undefined&gt; {
+  set({ loading: true });
+  return fn()
+    .catch((err: unknown) =&gt; {
+      const message = err instanceof Error ? err.message : '操作失败，请重试';
+      toastStore.getState().toast.error(message);
+      return undefined;
+    })
+    .finally(() =&gt; {
+      set({ loading: false });
+    });
+}
+
+// 使用示例（workspaceStore.ts）
+deleteFile: (fileId: string) =&gt;
+  withLoading(set, async () =&gt; {
+    await api.deleteFile(fileId);
+    set(state =&gt; {
+      state.files = state.files.filter(f =&gt; f.id !== fileId);
+    });
+  }),</code></pre>
+
+      <h3>Toast 使用规范</h3>
+      <p>
+        所有面向用户的操作反馈（成功提示、错误提示、信息通知）
+        均通过 <code>toastStore</code> 中的 <code>toast</code> 对象触发，
+        禁止直接操作 DOM 或使用第三方 toast 库：
+      </p>
+      <pre><code>import { toastStore } from '@/stores/toastStore';
+
+const { toast } = toastStore.getState();
+
+toast.success('文件上传成功');
+toast.error('网络异常，请稍后重试');
+toast.info('正在处理中，请等待...');</code></pre>
+
+      <h3>禁止乐观更新</h3>
+      <p>
+        发仔前端严格禁止乐观更新（Optimistic Update）——即在接口返回成功之前提前修改 UI 状态。
+        原因是 Agent 的操作涉及文件处理、沙箱执行等异步副作用，
+        乐观更新在回滚时会导致与后端状态不一致，增加调试难度。
+      </p>
+      <blockquote>
+        <p>
+          <strong>规范</strong>：接口调用期间展示 loading 状态；
+          接口返回 <code>code: 0</code>（成功）后，用服务端返回的数据更新 Store；
+          接口失败时通过 <code>toast.error()</code> 提示用户，Store 状态保持不变。
+        </p>
+      </blockquote>
+
+    </main>
+  </div>
+</body>
+</html>

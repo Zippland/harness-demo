@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>技能开发 - Finance Agent (发仔) Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html">数据模型</a></li>
+            <li><a href="sandbox.html">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html">前端界面</a></li>
+            <li><a href="skills.html" class="active">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+
+      <!-- ==================== 1. Skills 概述 ==================== -->
+      <h1>Skills 插件系统</h1>
+      <p>
+        Skills 是发仔的<strong>可复用分析能力包</strong>，以 ZIP 压缩包形式分发，
+        可在运行时动态加载到沙箱执行环境中。每个 Skill 封装了一组领域专属的分析逻辑——
+        例如股票技术指标计算、财务报表解析或 PDF 报告提取——Agent 通过
+        <code>SkillTool</code> 按需调用，无需将所有能力打包到同一个镜像中。
+      </p>
+
+      <h2>Skills 概述</h2>
+      <p>
+        Skills 系统的核心设计目标是让能力扩展与核心 Agent 解耦：新增、更新或废弃某项分析能力，
+        只需上传新版 Skill 包并在工作区配置中切换开关，无需重新部署 Agent 服务。
+      </p>
+
+      <h3>两种类型</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>标识值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>内置 Skill</strong></td>
+            <td><code>builtin</code></td>
+            <td>
+              由发仔团队统一维护，存放于代码仓库的 <code>builtin_skills/</code> 目录，
+              通过 <code>scripts/sync_builtin_skills.py</code> 同步到数据库。
+              <code>owner_id</code> 为系统保留值 <code>system</code>。
+            </td>
+          </tr>
+          <tr>
+            <td><strong>用户自定义 Skill</strong></td>
+            <td><code>custom</code></td>
+            <td>
+              由用户通过 API 上传，<code>owner_id</code> 为创建者用户 ID。
+              可灵活扩展私有或团队专属的分析能力，与内置 Skill 在同一调用链路中工作。
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>两种作用域</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>作用域</th>
+            <th>标识值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>全局</strong></td>
+            <td><code>public</code></td>
+            <td>
+              所有用户均可见并启用，通常用于内置 Skill 或团队共享的通用能力包。
+            </td>
+          </tr>
+          <tr>
+            <td><strong>工作区</strong></td>
+            <td><code>private</code> / <code>team</code></td>
+            <td>
+              <code>private</code> 仅创建者可见；<code>team</code> 限定在指定团队（<code>scope_id</code>）内可见。
+              用于保护专有分析逻辑或限制能力仅在特定业务线使用。
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <blockquote>
+        <p>
+          <strong>工作区启用粒度</strong>：Skill 的 <code>scope</code> 控制<em>谁能看到</em>该 Skill，
+          而 <code>agent_workspaces.skills</code> 字段控制<em>当前工作区是否启用</em>该 Skill。
+          两者独立配置，互不干扰。
+        </p>
+      </blockquote>
+
+      <!-- ==================== 2. Skill 包结构 ==================== -->
+      <h2>Skill 包结构</h2>
+      <p>
+        每个 Skill 以 ZIP 压缩包形式交付，内部文件布局有固定约定，
+        <code>manifest.yaml</code> 是唯一的必填文件，其余文件按需包含：
+      </p>
+      <pre><code>skill_name.zip
+  manifest.yaml       # （必填）Skill 描述和工具定义
+  main.py             # 主入口，实现 manifest 中声明的工具函数
+  requirements.txt    # Python 依赖，沙箱加载时自动安装
+  utils/              # 可选的辅助模块目录
+    helpers.py
+    constants.py
+  data/               # 可选的静态数据文件（如行业分类映射表）
+    industry_map.csv</code></pre>
+
+      <h3>manifest.yaml 关键字段</h3>
+      <p>
+        <code>manifest.yaml</code> 描述了 Skill 的元数据以及它向 Agent 暴露的工具接口，
+        是 SkillTool 解析和注册工具的唯一依据：
+      </p>
+      <pre><code>name: skill_stock_analysis          # Skill 唯一标识（与数据库 _id 对应）
+display_name: 股票技术分析            # 前端展示名称
+version: 1.2.0                      # SemVer 版本号
+description: |                      # 注入 LLM System Prompt 的功能描述
+  提供 A 股、港股技术指标计算（MA、MACD、RSI 等）
+  及 K 线形态识别能力，支持多周期分析。
+
+tools:                              # 向 Agent 暴露的工具列表
+  - name: calc_technical_indicators
+    description: 计算指定股票的技术指标
+    entry: main.calc_technical_indicators   # 模块路径.函数名
+    parameters:
+      type: object
+      properties:
+        symbol:
+          type: string
+          description: 股票代码，如 "600036.SH"
+        indicators:
+          type: array
+          items:
+            type: string
+          description: 指标列表，如 ["MA5", "MACD", "RSI14"]
+        period:
+          type: string
+          enum: [daily, weekly, monthly]
+          description: K 线周期
+      required: [symbol, indicators]
+
+  - name: detect_candlestick_pattern
+    description: 识别 K 线形态（如头肩顶、双底等）
+    entry: main.detect_candlestick_pattern
+    parameters:
+      type: object
+      properties:
+        symbol:
+          type: string
+        lookback_days:
+          type: integer
+          description: 回溯交易日数量，默认 60
+      required: [symbol]</code></pre>
+
+      <blockquote>
+        <p>
+          <strong>entry 字段约定</strong>：格式为 <code>module.function</code>，
+          其中 <code>module</code> 是相对于 ZIP 根目录的 Python 模块路径（点分隔），
+          <code>function</code> 是该模块中的可调用对象名称。
+          例如 <code>utils.helpers.parse_report</code> 指向
+          <code>utils/helpers.py</code> 中的 <code>parse_report</code> 函数。
+        </p>
+      </blockquote>
+
+      <!-- ==================== 3. Skills 生命周期 ==================== -->
+      <h2>Skills 生命周期</h2>
+      <p>
+        一个 Skill 从创建到被 Agent 实际调用，经历以下六个阶段：
+      </p>
+
+      <ol>
+        <li>
+          <strong>创建 / 上传 Skill 包（<code>POST /api/skills</code>）</strong><br />
+          调用方将 Skill ZIP 包通过 multipart/form-data 上传到后端。
+          后端解析 <code>manifest.yaml</code>，验证字段合法性后将包存入 TOS
+          （路径：<code>skills/{name}/{version}.zip</code>），
+          并在 <code>agent_skills</code> 集合中写入元数据记录。
+          首次上传时 <code>cur_version</code> 自动设为该版本，后续上传新版本需手动晋升。
+        </li>
+        <li>
+          <strong>版本管理（版本号 + changelog）</strong><br />
+          每次上传新版本时，旧版本记录保留在 <code>versions[]</code> 数组中，不会被覆盖。
+          每个 <code>VersionEntry</code> 包含版本号（SemVer）、TOS 包路径、发布时间以及
+          <code>changelog</code> 变更说明。运维人员可通过管理 API 将 <code>cur_version</code>
+          回滚到任意历史版本，以快速响应线上问题。
+        </li>
+        <li>
+          <strong>启用 / 禁用（<code>PUT /api/skills/{id}/enable</code> 或 <code>disable</code>）</strong><br />
+          Skill 本身有全局 <code>status</code>（<code>active</code> / <code>deprecated</code> / <code>draft</code>）；
+          在工作区粒度，通过上述接口写入 <code>agent_workspaces.skills[skill_id].enabled</code> 字段，
+          控制该 Skill 是否对当前工作区的 Agent 可见。<code>deprecated</code> 状态的 Skill 无法被新工作区启用。
+        </li>
+        <li>
+          <strong>工作区配置（<code>agent_workspaces.skills</code> 字段）</strong><br />
+          工作区文档的 <code>skills</code> 字段是一个 Map，记录每个 Skill 在该工作区中的配置：
+          <code>enabled</code>（是否启用）与 <code>loaded_version</code>（当前已加载版本）。
+          新会话启动时，Agent 初始化逻辑读取此 Map，决定向 LLM 注入哪些工具描述。
+        </li>
+        <li>
+          <strong>沙箱加载（<code>loaded_version</code> 比对，按需同步）</strong><br />
+          <code>SkillTool</code> 在首次被调用前，会比对工作区记录的 <code>loaded_version</code>
+          与 <code>agent_skills.cur_version</code>：若版本不一致，则从 TOS 拉取最新 ZIP 包，
+          解压到沙箱的 <code>/workspace/skills/{skill_name}/</code> 目录，
+          并执行 <code>pip install -r requirements.txt</code> 安装依赖后，更新
+          <code>loaded_version</code>。相同版本下重复调用不触发重复下载，避免浪费 I/O。
+        </li>
+        <li>
+          <strong>Agent 通过 <code>SkillTool</code> 调用</strong><br />
+          Skill 加载完成后，<code>SkillTool</code> 根据 <code>manifest.yaml</code> 中的
+          <code>entry</code> 字段动态 import 对应模块，以关键字参数的方式调用目标函数，
+          将返回值序列化为字符串后作为工具结果返回给 LLM。整个调用过程在沙箱内完成，
+          与宿主环境完全隔离。
+        </li>
+      </ol>
+
+      <!-- ==================== 4. SkillDoc 数据模型 ==================== -->
+      <h2>SkillDoc 数据模型</h2>
+      <p>
+        Skills 元数据存储于 MongoDB <code>agent_skills</code> 集合。每条文档的字段定义如下：
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>字段名</th>
+            <th>类型</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>name</code></td>
+            <td>String</td>
+            <td>
+              Skill 唯一标识（同时作为 <code>_id</code>），人类可读，建议使用蛇形命名，
+              如 <code>skill_stock_analysis</code>
+            </td>
+          </tr>
+          <tr>
+            <td><code>description</code></td>
+            <td>String</td>
+            <td>
+              Skill 功能描述，会被注入 LLM System Prompt，
+              帮助模型判断何时使用该 Skill 中的工具
+            </td>
+          </tr>
+          <tr>
+            <td><code>cur_version</code></td>
+            <td>String</td>
+            <td>
+              当前稳定版本号（SemVer），新工作区配置该 Skill 时默认锁定此版本
+            </td>
+          </tr>
+          <tr>
+            <td><code>type</code></td>
+            <td>String</td>
+            <td>
+              技能类型：<code>builtin</code>（内置，由系统维护）/
+              <code>custom</code>（用户自定义）
+            </td>
+          </tr>
+          <tr>
+            <td><code>owner_id</code></td>
+            <td>String</td>
+            <td>
+              创建者用户 ID；内置 Skill 固定为系统保留值 <code>system</code>
+            </td>
+          </tr>
+          <tr>
+            <td><code>scope</code></td>
+            <td>String</td>
+            <td>
+              可见范围：<code>public</code>（所有用户）/
+              <code>private</code>（仅创建者）/
+              <code>team</code>（指定团队，配合 <code>scope_id</code> 使用）
+            </td>
+          </tr>
+          <tr>
+            <td><code>scope_id</code></td>
+            <td>String</td>
+            <td>
+              当 <code>scope</code> 为 <code>team</code> 时有效，记录目标团队 ID；
+              其他情况为空字符串
+            </td>
+          </tr>
+          <tr>
+            <td><code>versions</code></td>
+            <td>Array&lt;VersionEntry&gt;</td>
+            <td>
+              历史版本列表，按发布时间升序排列；每个 VersionEntry 包含
+              <code>version</code>（版本号）、<code>tos_path</code>（ZIP 存储路径）、
+              <code>released_at</code>（发布时间）、<code>changelog</code>（变更说明）
+            </td>
+          </tr>
+          <tr>
+            <td><code>status</code></td>
+            <td>String</td>
+            <td>
+              全局状态：<code>active</code>（可用）/
+              <code>deprecated</code>（已废弃，禁止新工作区启用）/
+              <code>draft</code>（草稿，仅 owner 可见和测试）
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>VersionEntry 子文档结构</h3>
+      <pre><code>{
+  "version": "1.2.0",
+  "tos_path": "tos://finance-agent-bucket/skills/skill_stock_analysis/1.2.0.zip",
+  "released_at": "2024-03-15T08:30:00Z",
+  "changelog": "新增 RSI 指标；修复 MACD 零轴判断逻辑错误"
+}</code></pre>
+
+      <!-- ==================== 5. 内置 Skills 同步 ==================== -->
+      <h2>内置 Skills 同步</h2>
+      <p>
+        内置 Skills 的源码存放于代码仓库，以保证版本追踪和 Code Review 流程可控。
+        <strong><code>scripts/sync_builtin_skills.py</code></strong> 脚本负责将仓库中的内置 Skill
+        同步到生产数据库，是 CI/CD 流水线的一部分，在每次合并到主干后自动触发。
+      </p>
+
+      <h3>脚本的主要工作</h3>
+      <ol>
+        <li>
+          <strong>扫描内置 Skill 目录</strong>：遍历 <code>builtin_skills/</code> 下的所有子目录，
+          读取每个 Skill 的 <code>manifest.yaml</code>，获取名称与版本。
+        </li>
+        <li>
+          <strong>比对数据库现有记录</strong>：查询 <code>agent_skills</code> 集合，
+          对比 <code>name</code> 和 <code>cur_version</code>。若版本已存在则跳过，
+          防止重复上传。
+        </li>
+        <li>
+          <strong>打包并上传到 TOS</strong>：对有变更的 Skill，脚本在临时目录中创建 ZIP 包，
+          按路径规范 <code>skills/{name}/{version}.zip</code> 上传到 TOS。
+        </li>
+        <li>
+          <strong>写入 / 更新数据库文档</strong>：向 <code>agent_skills</code> 的
+          <code>versions[]</code> 追加新版本条目，并将 <code>cur_version</code> 更新为最新版本，
+          <code>type</code> 固定写为 <code>builtin</code>，<code>scope</code> 固定为 <code>public</code>。
+        </li>
+        <li>
+          <strong>输出同步报告</strong>：打印每个 Skill 的处理结果（新增 / 更新 / 跳过），
+          供 CI 日志审计。
+        </li>
+      </ol>
+
+      <blockquote>
+        <p>
+          <strong>本地运行</strong>：开发环境中可手动执行
+          <code>python scripts/sync_builtin_skills.py --dry-run</code> 预览将要发生的变更，
+          加 <code>--dry-run</code> 参数不会实际写入数据库或上传 TOS。
+        </p>
+      </blockquote>
+
+      <!-- ==================== 6. 如何开发新 Skill ==================== -->
+      <h2>如何开发新 Skill</h2>
+      <p>
+        以下步骤以开发一个"财务报表解析"Skill 为例，演示从本地编写到线上可用的完整流程。
+      </p>
+
+      <h3>步骤一：创建 manifest.yaml</h3>
+      <p>
+        在本地新建一个工作目录（如 <code>skill_fin_report/</code>），
+        创建 <code>manifest.yaml</code>，定义工具名、参数与描述：
+      </p>
+      <pre><code>name: skill_fin_report
+display_name: 财务报表解析
+version: 0.1.0
+description: |
+  解析 A 股上市公司财务报表（利润表、资产负债表、现金流量表），
+  提取关键财务指标并计算同比环比变化，支持 PDF 和 Excel 两种格式输入。
+
+tools:
+  - name: parse_financial_report
+    description: 解析财务报表文件，返回结构化财务数据
+    entry: main.parse_financial_report
+    parameters:
+      type: object
+      properties:
+        file_path:
+          type: string
+          description: 报表文件在沙箱中的路径（相对于 /workspace/）
+        report_type:
+          type: string
+          enum: [income_statement, balance_sheet, cash_flow]
+          description: 报表类型
+        fiscal_year:
+          type: integer
+          description: 财年，如 2023
+      required: [file_path, report_type]</code></pre>
+
+      <h3>步骤二：编写实现代码</h3>
+      <p>
+        在同一目录下创建 <code>main.py</code>，实现 <code>manifest.yaml</code> 中声明的函数。
+        函数参数必须与 <code>parameters</code> 中定义的字段一一对应：
+      </p>
+      <pre><code>import json
+from pathlib import Path
+
+def parse_financial_report(
+    file_path: str,
+    report_type: str,
+    fiscal_year: int = None
+) -> str:
+    """
+    解析财务报表，返回 JSON 字符串格式的结构化数据。
+    SkillTool 会将返回值直接作为工具结果传给 LLM，
+    建议返回人类可读的文本或紧凑 JSON。
+    """
+    abs_path = Path("/workspace") / file_path
+    if not abs_path.exists():
+        return f"错误：文件不存在 {file_path}"
+
+    # 根据文件后缀选择解析器
+    suffix = abs_path.suffix.lower()
+    if suffix == ".pdf":
+        data = _parse_pdf(abs_path, report_type)
+    elif suffix in (".xlsx", ".xls"):
+        data = _parse_excel(abs_path, report_type)
+    else:
+        return f"错误：不支持的文件格式 {suffix}"
+
+    if fiscal_year:
+        data = {k: v for k, v in data.items() if v.get("year") == fiscal_year}
+
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _parse_pdf(path: Path, report_type: str) -> dict:
+    # 实际解析逻辑（示例略）
+    ...
+
+
+def _parse_excel(path: Path, report_type: str) -> dict:
+    # 实际解析逻辑（示例略）
+    ...</code></pre>
+
+      <p>
+        如有第三方依赖，在同目录创建 <code>requirements.txt</code>，逐行列出包名和版本约束：
+      </p>
+      <pre><code>pdfplumber>=0.9.0
+openpyxl>=3.1.0</code></pre>
+
+      <h3>步骤三：打包成 ZIP</h3>
+      <p>
+        进入 Skill 工作目录，将所有文件压缩为 ZIP 包。
+        <strong>注意：ZIP 包内的文件应直接位于根层，不要套一层同名目录</strong>，
+        否则 SkillTool 在解压后无法正确解析模块路径：
+      </p>
+      <pre><code># 正确：从 skill_fin_report/ 目录内部打包
+cd skill_fin_report/
+zip -r ../skill_fin_report_v0.1.0.zip .
+
+# 验证包内容（应看到 manifest.yaml 在根层）
+unzip -l ../skill_fin_report_v0.1.0.zip</code></pre>
+
+      <h3>步骤四：通过 API 上传</h3>
+      <p>
+        使用 <code>POST /api/skills</code> 接口将 ZIP 包上传到系统。
+        请求需携带有效的认证 Token，上传成功后接口返回新建的 SkillDoc：
+      </p>
+      <pre><code>curl -X POST https://finance-agent.example.com/api/skills \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@skill_fin_report_v0.1.0.zip" \
+  -F "scope=private"</code></pre>
+
+      <p>响应示例：</p>
+      <pre><code>{
+  "name": "skill_fin_report",
+  "display_name": "财务报表解析",
+  "cur_version": "0.1.0",
+  "type": "custom",
+  "owner_id": "user_abc123",
+  "scope": "private",
+  "scope_id": "",
+  "status": "active"
+}</code></pre>
+
+      <h3>步骤五：在工作区启用</h3>
+      <p>
+        上传后 Skill 默认未在任何工作区启用，需要调用启用接口将其加入目标工作区：
+      </p>
+      <pre><code>curl -X PUT https://finance-agent.example.com/api/skills/skill_fin_report/enable \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "X-Workspace-Id: workspace_xyz789"</code></pre>
+
+      <p>
+        启用后，下次在该工作区发起会话时，Agent 将能感知到
+        <code>parse_financial_report</code> 工具，并在适当时机自动调用它。
+        首次调用时 SkillTool 会自动将 ZIP 包下载并解压到沙箱，后续重复调用直接执行，无需重新加载。
+      </p>
+
+      <blockquote>
+        <p>
+          <strong>调试技巧</strong>：开发阶段可将 Skill 的 <code>status</code> 设为
+          <code>draft</code>，此时仅 <code>owner_id</code> 对应的用户可见和测试，
+          确认无误后再发布为 <code>active</code> 对团队或全局开放。
+        </p>
+      </blockquote>
+
+    </main>
+  </div>
+</body>
+</html>

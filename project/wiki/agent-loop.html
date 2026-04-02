@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent 循环 - Finance Agent (发仔) Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html" class="active">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html">数据模型</a></li>
+            <li><a href="sandbox.html">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html">前端界面</a></li>
+            <li><a href="skills.html">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+      <h1>Agent 循环</h1>
+      <p>
+        <code>AgentLoop</code> 是发仔系统的核心，负责协调 LLM 调用与工具执行的主循环。
+        它将用户输入、会话历史、LLM 推理和工具执行有机串联，驱动整个对话与任务完成流程。
+      </p>
+
+      <h2>1. Agent Loop 概述</h2>
+      <p>
+        <code>AgentLoop</code> 以事件驱动的方式运行，每一轮循环从接收用户消息开始，
+        经过会话加载、Prompt 构建、LLM 流式推理、工具执行，再到消息持久化，
+        直到 LLM 输出纯文本回复（无工具调用）或达到终止条件为止。
+      </p>
+      <p>核心职责包括：</p>
+      <ul>
+        <li>协调 <strong>SessionManager</strong> 加载和维护会话上下文</li>
+        <li>驱动 <strong>LLM Provider</strong> 进行流式推理，处理 thinking、text、tool_calls 三类事件</li>
+        <li>调度 <strong>ToolRegistry</strong> 执行工具调用，并将结果写回上下文</li>
+        <li>通过 <strong>MessageStore</strong> 将每一步执行结果实时持久化至 MongoDB</li>
+        <li>管理 Token 用量，必要时自动压缩历史上下文</li>
+      </ul>
+
+      <h2>2. 执行流程</h2>
+      <p>Agent Loop 的完整执行流程如下所示，每轮循环按编号步骤顺序推进：</p>
+
+      <ol>
+        <li><strong>接收用户输入</strong>：从 API 层接收用户消息，触发一轮新的 Agent Loop。</li>
+        <li><strong>加载会话历史</strong>：<code>SessionManager</code> 从 MongoDB 读取历史消息，并利用 Redis 热缓存加速访问，构建完整的对话上下文。</li>
+        <li><strong>构建 Prompt</strong>：<code>PromptBuilder</code> 将 system prompt（包含角色设定、工具列表、当前日期等元信息）与消息历史合并，组装为 LLM 输入。</li>
+        <li><strong>流式调用 LLM</strong>：<code>LLM Provider</code> 以流式方式调用底层大模型，实时产出 <code>thinking</code>（推理过程）、<code>text</code>（响应文本）和 <code>tool_calls</code>（工具调用）三类事件。</li>
+        <li><strong>执行工具调用</strong>：若 LLM 产出 <code>tool_calls</code>，<code>ToolRegistry</code> 并发执行对应工具，收集执行结果。</li>
+        <li><strong>持久化消息</strong>：<code>MessageStore</code> 将本轮 assistant 消息（含 thinking、text、tool_use、tool_result）通过 MongoDB <code>$push</code> 实时追加，防止进程崩溃导致数据丢失。</li>
+        <li><strong>判断是否继续</strong>：若本轮存在 <code>tool_calls</code>，将工具结果追加到上下文后继续下一轮循环；若 LLM 输出纯文本回复，则循环结束，返回结果给用户。</li>
+      </ol>
+
+      <h3>ASCII 流程图</h3>
+      <pre><code>用户输入
+  ↓
+[SessionManager] 加载会话历史 (MongoDB)
+  ↓
+[PromptBuilder] 构建 system prompt + 消息历史
+  ↓
+[LLM Provider] 流式调用 LLM
+  ├─→ thinking（推理过程）
+  ├─→ text（响应文本）
+  └─→ tool_calls（工具调用）
+  ↓
+[ToolRegistry] 执行工具
+  ↓
+[MessageStore] 持久化消息 ($push)
+  ↓
+如有 tool_calls → 继续循环，否则结束</code></pre>
+
+      <h2>3. LLM Provider 抽象层</h2>
+      <p>
+        为屏蔽不同大模型服务商的 API 差异，发仔定义了统一的 <code>LLMProvider</code> 抽象接口。
+        当前支持两种实现：
+      </p>
+      <ul>
+        <li><strong>OpenAI</strong>：兼容 OpenAI Chat Completions API，支持 GPT 系列及兼容接口。</li>
+        <li><strong>VolcEngine Ark</strong>：字节跳动火山引擎 Ark 平台，支持豆包等国内大模型。</li>
+      </ul>
+      <p>
+        所有 Provider 均以流式（Server-Sent Events）方式返回结果，并统一转换为以下标准流事件类型：
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>事件类型</th>
+            <th>说明</th>
+            <th>触发时机</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>THINKING_DELTA</code></td>
+            <td>推理过程增量片段</td>
+            <td>LLM 输出 thinking 内容时逐块触发</td>
+          </tr>
+          <tr>
+            <td><code>THINKING_DONE</code></td>
+            <td>推理过程完成</td>
+            <td>thinking 内容全部输出完毕</td>
+          </tr>
+          <tr>
+            <td><code>TEXT_DELTA</code></td>
+            <td>响应文本增量片段</td>
+            <td>LLM 输出正文内容时逐块触发</td>
+          </tr>
+          <tr>
+            <td><code>TEXT_DONE</code></td>
+            <td>响应文本完成</td>
+            <td>正文内容全部输出完毕</td>
+          </tr>
+          <tr>
+            <td><code>TOOL_CALL_PENDING</code></td>
+            <td>工具调用待执行</td>
+            <td>LLM 决定调用工具、参数组装完成后</td>
+          </tr>
+          <tr>
+            <td><code>TOOL_CALLS</code></td>
+            <td>工具调用列表完整</td>
+            <td>本轮所有工具调用参数均已就绪</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>4. SessionManager 与 Token 管理</h2>
+
+      <h3>会话历史加载</h3>
+      <p>
+        <code>SessionManager</code> 负责管理每个会话的完整消息历史。
+        消息持久存储于 MongoDB，同时以 Redis 作为热缓存层，加速高频访问场景下的历史读取。
+        每次 Agent Loop 启动时，SessionManager 优先从 Redis 读取缓存；若缓存未命中，则回退至 MongoDB 全量加载。
+      </p>
+
+      <h3>TokenTracker</h3>
+      <p>
+        <code>TokenTracker</code> 在每轮循环中追踪输入和输出的 token 用量，为 Context Compaction 提供决策依据，
+        同时用于计费统计与用量监控。
+      </p>
+
+      <h3>Context Compaction（上下文压缩）</h3>
+      <p>
+        当历史消息的 token 总量接近模型上下文窗口限制时，<code>SessionManager</code> 会自动触发上下文压缩策略：
+      </p>
+      <ul>
+        <li>压缩阈值（<code>COMPACT_THRESHOLD</code>）为 <strong>0.85</strong>，即 token 用量超过上下文窗口的 85% 时触发。</li>
+        <li>压缩时保留最近 <strong>10 条</strong>消息（<code>COMPACT_KEEP_RECENT</code>），对更早的历史进行摘要合并。</li>
+        <li>至少需要 <strong>5 条</strong>消息（<code>COMPACT_MIN_MESSAGES</code>）才会触发压缩，避免对短会话无意义压缩。</li>
+      </ul>
+
+      <h3>图像剪裁</h3>
+      <p>
+        历史消息中可能包含图片（如截图、财务报表扫描件等），图片会消耗大量 token。
+        <code>SessionManager</code> 会自动识别并从较早的历史消息中移除图片内容，
+        仅保留最近消息中的图片，以有效节省 token 用量，同时不影响当前对话的图片理解能力。
+      </p>
+
+      <h2>5. 消息持久化机制</h2>
+      <p>
+        为保证消息不因进程崩溃或异常中断而丢失，发仔采用<strong>逐步 <code>$push</code></strong> 策略进行消息持久化：
+      </p>
+      <ul>
+        <li>每当 assistant 产出一段内容（thinking、text、tool_use 或 tool_result），立即通过 MongoDB 的 <code>$push</code> 操作追加到对应会话文档，而非等到整轮循环结束后批量写入。</li>
+        <li>一条完整的 assistant 消息包含完整执行链：<strong>thinking → text → tool_use → tool_result</strong>，完整记录推理过程与工具调用细节，便于后续审计和调试。</li>
+        <li>即便进程在某步骤中途崩溃，已 <code>$push</code> 的部分也已安全落盘，最大程度保护数据完整性。</li>
+      </ul>
+
+      <blockquote>
+        <p>
+          <strong>设计原则：</strong>每一步 <code>$push</code> 而非最终批量写入，是发仔消息持久化的核心设计，
+          确保在高并发与不稳定网络环境下仍能保留尽可能完整的执行记录。
+        </p>
+      </blockquote>
+
+      <h2>6. AgentLoop 关键配置</h2>
+      <p>以下为 AgentLoop 上下文管理相关的核心配置项：</p>
+      <table>
+        <thead>
+          <tr>
+            <th>配置项</th>
+            <th>默认值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>COMPACT_CONTEXT_LIMIT</code></td>
+            <td>128000 token</td>
+            <td>模型上下文窗口总大小，压缩决策基于此值计算</td>
+          </tr>
+          <tr>
+            <td><code>COMPACT_OUTPUT_RESERVE</code></td>
+            <td>4096 token</td>
+            <td>为模型输出预留的 token 空间，不计入历史可用额度</td>
+          </tr>
+          <tr>
+            <td><code>COMPACT_THRESHOLD</code></td>
+            <td>0.85</td>
+            <td>触发上下文压缩的 token 占用比例阈值（85%）</td>
+          </tr>
+          <tr>
+            <td><code>COMPACT_KEEP_RECENT</code></td>
+            <td>10 条</td>
+            <td>压缩时保留的最近消息条数，确保近期上下文完整</td>
+          </tr>
+          <tr>
+            <td><code>COMPACT_MIN_MESSAGES</code></td>
+            <td>5 条</td>
+            <td>触发压缩所需的最少消息条数，避免短会话被误压缩</td>
+          </tr>
+        </tbody>
+      </table>
+    </main>
+  </div>
+</body>
+</html>

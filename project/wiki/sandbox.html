@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>沙箱环境 - Finance Agent (发仔) Wiki</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header id="header">
+    <a class="logo" href="index.html">
+      <span class="logo-icon">发</span>
+      发仔 Wiki
+    </a>
+  </header>
+
+  <div id="page-wrapper">
+    <aside id="sidebar">
+      <nav>
+        <div class="nav-group">
+          <span class="nav-group-title">概览</span>
+          <ul>
+            <li><a href="index.html">首页</a></li>
+            <li><a href="overview.html">项目概览</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">核心架构</span>
+          <ul>
+            <li><a href="architecture.html">架构设计</a></li>
+            <li><a href="agent-loop.html">Agent 循环</a></li>
+            <li><a href="tools.html">工具系统</a></li>
+            <li><a href="api.html">API 接口</a></li>
+            <li><a href="data-models.html">数据模型</a></li>
+            <li><a href="sandbox.html" class="active">沙箱环境</a></li>
+          </ul>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-title">开发指南</span>
+          <ul>
+            <li><a href="frontend.html">前端界面</a></li>
+            <li><a href="skills.html">技能开发</a></li>
+            <li><a href="dev-guide.html">开发指南</a></li>
+          </ul>
+        </div>
+      </nav>
+      <div id="sidebar-footer">
+        Finance Agent (发仔) · 字节跳动内部项目
+      </div>
+    </aside>
+
+    <main id="main-content">
+
+      <!-- ==================== 1. 沙箱概述 ==================== -->
+      <h1>沙箱环境</h1>
+      <p>
+        发仔的沙箱执行环境为 Agent 的 Shell/Python 代码提供<strong>隔离的运行空间</strong>，
+        确保用户数据安全、系统稳定，并防止恶意代码对宿主环境造成影响。
+        每个会话独占一个沙箱实例，沙箱之间互不可见，彻底杜绝跨会话数据泄露。
+      </p>
+
+      <h2>沙箱概述</h2>
+      <p>
+        沙箱的核心目标是在不限制 Agent 合理计算能力的前提下，最小化安全攻击面。具体设计原则如下：
+      </p>
+      <ul>
+        <li>
+          <strong>代码隔离</strong>：Agent 通过 <code>shell_exec</code> 工具触发的所有 Shell 命令与
+          Python 脚本，均在独立沙箱容器中执行，不直接访问宿主机文件系统或网络。
+        </li>
+        <li>
+          <strong>双 Provider 架构</strong>：生产环境使用
+          <strong>ByteAI Sandbox</strong>（gVisor 内核级隔离），开发与测试环境使用
+          <strong>Local Docker Sandbox</strong>（标准 Docker 容器），两者对上层代码暴露统一接口。
+        </li>
+        <li>
+          <strong>会话级生命周期</strong>：沙箱随会话创建而分配，随会话删除（或超时）而回收，
+          生命周期与用户会话严格绑定。
+        </li>
+      </ul>
+
+      <blockquote>
+        <p>
+          <strong>Provider 切换</strong>：通过环境变量 <code>SANDBOX_PROVIDER</code> 指定使用的沙箱实现。
+          设置为 <code>bytedai</code> 启用生产级 ByteAI Sandbox，设置为 <code>local</code> 启用本地 Docker 沙箱。
+        </p>
+      </blockquote>
+
+      <!-- ==================== 2. 工作目录结构 ==================== -->
+      <h2>沙箱工作目录结构</h2>
+      <p>
+        每个沙箱实例在启动时会初始化一个标准化的 <code>/workspace/</code> 工作目录，
+        Agent 的所有文件读写操作均限制在此目录下，各子目录职责明确：
+      </p>
+      <pre><code>/workspace/
+  uploads/      # 用户上传的文件（CSV、Excel、图片等原始数据）
+  artifacts/    # Agent 产出的分析结果（图表、报告、生成文件等）
+  skills/       # 加载的 Skills 包（动态扩展能力模块）
+  sessions/     # 会话相关文件（上下文快照、临时状态等）
+  memory.json   # Agent 持久化记忆（跨轮次保存的关键信息）</code></pre>
+
+      <p>目录说明：</p>
+      <ul>
+        <li>
+          <strong><code>uploads/</code></strong>：用户通过前端上传的文件会被同步至此目录，
+          Agent 可直接读取进行数据分析，该目录对 Agent 只读（防止意外覆盖用户原始数据）。
+        </li>
+        <li>
+          <strong><code>artifacts/</code></strong>：Agent 执行分析后产生的所有输出文件写入此目录，
+          前端通过 Artifacts API 轮询并展示给用户。
+        </li>
+        <li>
+          <strong><code>skills/</code></strong>：<code>SkillTool</code> 动态加载的技能包解压至此目录，
+          Agent 可调用技能包中预定义的分析逻辑。
+        </li>
+        <li>
+          <strong><code>sessions/</code></strong>：存储会话级的临时状态文件，
+          如任务进度、中间计算结果等，会话结束后随沙箱一同清理。
+        </li>
+        <li>
+          <strong><code>memory.json</code></strong>：由 <code>MemoryTool</code> 维护，
+          存储 Agent 在当前会话中主动持久化的关键信息，支持跨轮次记忆检索。
+        </li>
+      </ul>
+
+      <!-- ==================== 3. 沙箱生命周期 ==================== -->
+      <h2>沙箱生命周期</h2>
+      <p>
+        沙箱的完整生命周期分为六个阶段，从会话创建到资源清理形成闭环：
+      </p>
+
+      <ol>
+        <li>
+          <strong>会话创建 → 分配沙箱</strong><br />
+          用户发起新会话时，<code>sandbox/manager.py</code> 中的沙箱池管理器优先从空闲池中取出
+          一个预热的沙箱实例；若池中无可用实例，则动态创建新沙箱并等待其就绪。
+        </li>
+        <li>
+          <strong>准备 workspace/ 目录</strong><br />
+          沙箱分配完成后，系统自动初始化标准工作目录结构，
+          创建 <code>uploads/</code>、<code>artifacts/</code>、<code>skills/</code>、
+          <code>sessions/</code> 等子目录，并生成空白的 <code>memory.json</code>。
+        </li>
+        <li>
+          <strong>用户上传文件 → 同步到 /workspace/uploads/</strong><br />
+          用户通过前端上传的文件经由后端文件服务同步到对应沙箱的
+          <code>/workspace/uploads/</code> 目录，Agent 随即可以访问这些文件。
+        </li>
+        <li>
+          <strong>Agent 执行 shell_exec 工具 → 在沙箱中运行</strong><br />
+          Agent 调用 <code>ExecTool</code>（<code>shell_exec</code>）时，命令被路由到该会话绑定的
+          沙箱实例中执行。执行结果（标准输出、标准错误、退出码）实时返回给 Agent。
+        </li>
+        <li>
+          <strong>产物输出到 /workspace/artifacts/</strong><br />
+          Agent 在沙箱中生成的图表、报告等产物写入 <code>/workspace/artifacts/</code>，
+          后端定期扫描此目录并通过 Artifacts API 将新文件推送给前端展示。
+        </li>
+        <li>
+          <strong>会话删除 → TTL 后清理沙箱</strong><br />
+          会话结束或超时后，沙箱进入待回收状态。定时任务
+          <code>cronjob/sandbox_session_reconcile.py</code> 负责扫描过期沙箱，
+          释放计算资源并清理所有关联的 workspace 数据。
+        </li>
+      </ol>
+
+      <!-- ==================== 4. 安全机制 ==================== -->
+      <h2>安全机制</h2>
+      <p>
+        沙箱通过多层防御机制保障执行安全，各层机制相互补充，形成纵深防御体系：
+      </p>
+      <ul>
+        <li>
+          🛡️ <strong>gVisor（系统调用过滤）</strong>：在 ByteAI Sandbox 中，
+          容器内的系统调用由 gVisor 用户态内核拦截并审查，攻击者无法直接触达宿主机内核，
+          大幅降低内核漏洞利用风险。
+        </li>
+        <li>
+          📂 <strong>只读根文件系统</strong>：容器的根文件系统以只读方式挂载，
+          恶意代码无法篡改系统二进制文件或注入持久化后门；仅 <code>/workspace/</code>
+          挂载为可写 Volume。
+        </li>
+        <li>
+          🌐 <strong>网络限制（默认禁用，可配置白名单）</strong>：沙箱默认关闭出站网络访问，
+          防止数据外泄和 C&C 回连；如业务需要，可通过白名单配置放行特定域名或 IP 段。
+        </li>
+        <li>
+          ⚙️ <strong>CPU / 内存资源限制</strong>：通过 cgroup 对每个沙箱实例设置 CPU 配额与内存上限，
+          避免单个 Agent 任务耗尽宿主机资源，影响其他用户的服务质量。
+        </li>
+        <li>
+          🔢 <strong>PID 数量限制</strong>：限制沙箱内可创建的进程与线程总数，
+          防止 fork 炸弹等拒绝服务攻击导致宿主机资源耗尽。
+        </li>
+        <li>
+          🗂️ <strong>每会话独立隔离 Volume</strong>：每个沙箱实例拥有独立的存储 Volume，
+          不同会话之间的文件系统完全隔离，确保用户数据不会被其他会话访问或污染。
+        </li>
+      </ul>
+
+      <!-- ==================== 5. Provider 对比 ==================== -->
+      <h2>沙箱 Provider 对比</h2>
+      <p>
+        发仔支持两种沙箱 Provider，分别针对生产环境的安全性需求与本地开发的便利性需求进行了优化：
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>特性</th>
+            <th>ByteAI Sandbox</th>
+            <th>Local Docker Sandbox</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>使用场景</td>
+            <td>生产环境</td>
+            <td>开发 / 测试</td>
+          </tr>
+          <tr>
+            <td>隔离级别</td>
+            <td>gVisor（内核级）</td>
+            <td>Docker（容器级）</td>
+          </tr>
+          <tr>
+            <td>配置方式</td>
+            <td><code>SANDBOX_PROVIDER=bytedai</code></td>
+            <td><code>SANDBOX_PROVIDER=local</code></td>
+          </tr>
+          <tr>
+            <td>网络策略</td>
+            <td>受限白名单（默认禁用）</td>
+            <td>可自由配置</td>
+          </tr>
+          <tr>
+            <td>启动速度</td>
+            <td>沙箱池预热，毫秒级分配</td>
+            <td>按需创建，秒级启动</td>
+          </tr>
+          <tr>
+            <td>依赖要求</td>
+            <td>ByteAI 平台服务</td>
+            <td>本地 Docker Engine</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <!-- ==================== 6. 相关配置项 ==================== -->
+      <h2>相关配置项</h2>
+      <p>
+        沙箱相关的配置项与核心模块如下：
+      </p>
+
+      <h3>环境变量</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>配置项</th>
+            <th>可选值</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>SANDBOX_PROVIDER</code></td>
+            <td><code>bytedai</code> | <code>local</code></td>
+            <td>指定沙箱实现。生产环境使用 <code>bytedai</code>，本地开发使用 <code>local</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>核心模块</h3>
+      <ul>
+        <li>
+          <strong><code>sandbox/manager.py</code></strong>：沙箱池管理器，
+          负责沙箱实例的创建、分配、回收与健康检查。维护空闲池以缩短会话启动延迟。
+        </li>
+        <li>
+          <strong><code>cronjob/sandbox_session_reconcile.py</code></strong>：
+          定时清理任务，定期扫描数据库中已删除或超时（TTL 到期）的会话，
+          调用沙箱管理器释放对应的沙箱实例与存储 Volume，防止资源泄漏。
+        </li>
+      </ul>
+
+      <blockquote>
+        <p>
+          <strong>本地开发提示</strong>：使用 Local Docker Sandbox 时，请确保本地已安装并启动
+          Docker Engine，且当前用户有权限执行 <code>docker</code> 命令。
+          可通过 <code>docker ps</code> 验证 Docker 是否正常运行。
+        </p>
+      </blockquote>
+
+    </main>
+  </div>
+</body>
+</html>
