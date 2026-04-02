@@ -6,7 +6,6 @@
  *   Generator: Read, Write, Edit, Glob, Grep, Bash → 实现代码
  *   Evaluator: Read, Glob, Grep, Bash            → 跑测试 + 审代码（不能写文件）
  *
- * Prompt 模板在 prompts/ 目录下，用 {{var}} 占位符。
  *
  * npm start "构建一个 URL 解析库"
  */
@@ -32,6 +31,7 @@ interface Feature {
   id: string
   name: string
   prompt: string
+  evaluation: string
   status: 'pending' | 'failing' | 'passing'
 }
 
@@ -78,15 +78,18 @@ function shortPath(p: string): string {
 
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Planner: {
+    model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
     disallowedTools: ['Edit'],
     maxTurns: 30,
   },
   Generator: {
+    model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
     maxTurns: 30,
   },
   Evaluator: {
+    model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     disallowedTools: ['Write', 'Edit'],
     maxTurns: 10,
@@ -252,6 +255,7 @@ async function evaluate(feature: Feature, principles: string): Promise<EvalResul
   const { structured, result } = await runAgent('Evaluator', loadPrompt('evaluator', {
     featureId: feature.id,
     featurePrompt: feature.prompt,
+    evaluation: feature.evaluation ?? '',
     principles,
   }), { outputFormat: EVAL_SCHEMA })
 
