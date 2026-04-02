@@ -113,7 +113,8 @@ async function runAgent(
     if (msg.type === 'assistant') {
       for (const block of ((msg as any).message?.content ?? [])) {
         if (block.type === 'text' && block.text?.trim()) {
-          console.log(`    ${dim(block.text.trim().replace(/\n/g, ' ').slice(0, 120))}`)
+          const text = block.text.trim().replace(/\n/g, ' ').slice(0, 150)
+          console.log(`    ${cyan('>')} ${text}`)
         }
         if (block.type === 'tool_use') {
           logTool(block.name, block.input)
