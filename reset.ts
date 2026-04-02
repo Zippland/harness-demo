@@ -1,24 +1,38 @@
 /**
  * 重置 demo 状态，允许用新任务重新开始。
- * 清除 planner 和 executor 生成的所有产物。
+ * 清除所有 sprint 文件和 agent 生成的产物。
  */
 
-import { writeFileSync, rmSync, existsSync } from 'fs'
+import { writeFileSync, rmSync, existsSync, readdirSync } from 'fs'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
 
-// 清除 progress（planner 的输出）
-if (existsSync('progress.json')) {
-  rmSync('progress.json')
-  console.log('✓ Removed progress.json')
+const ROOT = dirname(fileURLToPath(import.meta.url))
+const PROGRESS_DIR = resolve(ROOT, 'progress')
+
+// 清除所有 sprint 文件
+if (existsSync(PROGRESS_DIR)) {
+  const files = readdirSync(PROGRESS_DIR).filter(f => f.endsWith('.json'))
+  for (const f of files) {
+    rmSync(resolve(PROGRESS_DIR, f))
+  }
+  console.log(`✓ Removed ${files.length} sprint file(s)`)
+} else {
+  console.log('✓ No sprint files to remove')
 }
 
-// 清除 agent 写的代码
-const emptyStub = `// Waiting for harness planner to scaffold this project.\n`
-writeFileSync('project/src/index.ts', emptyStub)
+// 清除旧的 progress.json（兼容）
+if (existsSync(resolve(ROOT, 'progress.json'))) {
+  rmSync(resolve(ROOT, 'progress.json'))
+  console.log('✓ Removed legacy progress.json')
+}
+
+// 清除 agent 写的代码和测试
+const stub = `// Waiting for harness to scaffold this project.\n`
+writeFileSync(resolve(ROOT, 'project/src/index.ts'), stub)
 console.log('✓ Reset project/src/index.ts')
 
-// 清除 planner 写的测试
-const emptyTest = `// Waiting for harness planner to write tests.\n`
-writeFileSync('project/tests/index.test.ts', emptyTest)
+writeFileSync(resolve(ROOT, 'project/tests/index.test.ts'), stub)
 console.log('✓ Reset project/tests/index.test.ts')
 
 console.log('\nReady. Run: npm start "<your task>"')

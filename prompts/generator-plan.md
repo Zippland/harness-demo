@@ -22,6 +22,7 @@ Set up files under `project/`:
 ## 3. Write {{progressFile}}
 ```json
 {
+  "sprint": <sprint number>,
   "task": "<the original task, verbatim>",
   "features": [
     {

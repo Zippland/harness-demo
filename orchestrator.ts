@@ -1,54 +1,77 @@
 /**
  * Harness — Generator ↔ Evaluator 对抗架构
  *
- * 三个 Agent，各自看到不同的工具集：
- *   Planner:   Read, Write, Glob, Grep, Bash    → 调研 + 拆任务 + 写测试
- *   Generator: Read, Write, Edit, Glob, Grep, Bash → 实现代码
- *   Evaluator: Read, Glob, Grep, Bash            → 跑测试 + 审代码（不能写文件）
+ * 每轮 Sprint 产生独立的 sprint-N.json，不修改历史记录。
  *
+ * 大循环：
+ *   Sprint 1: negotiate → implement(L1) → review
+ *   Sprint 2: negotiate(review feedback) → implement(L1) → review
+ *   ...直到 review approved 或达到上限
  *
  * npm start "构建一个 URL 解析库"
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { execSync } from 'child_process'
+import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
 import { resolve, dirname, relative } from 'path'
 import { fileURLToPath } from 'url'
 
 // ─── Paths & Config ───
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const PROGRESS_FILE = resolve(ROOT, 'progress.json')
+const PROGRESS_DIR = resolve(ROOT, 'progress')
 const PRINCIPLES_FILE = resolve(ROOT, 'control/golden-principles.md')
 const PROMPTS_DIR = resolve(ROOT, 'prompts')
-const MAX_RETRIES = 5
+const MAX_L1_RETRIES = 5
+const MAX_NEGOTIATE_ROUNDS = 30
+const MAX_SPRINTS = 10
 
 // ─── Types ───
 
-type Role = 'Planner' | 'Generator' | 'Evaluator'
+type Role = 'Generator' | 'Evaluator'
 
 interface Evaluation {
-  checks: string[]   // 确定性命令，orchestrator 用 execSync 跑（L1）
-  intent: string     // 领域上下文，给 Evaluator 理解意图用（L2）
+  checks: string[]
+  intent: string
 }
 
 interface Feature {
   id: string
   name: string
   prompt: string
-  evaluation: Evaluation | string  // 兼容旧格式
+  evaluation: Evaluation | string
   status: 'pending' | 'failing' | 'passing'
 }
 
-interface Progress {
+interface Sprint {
+  sprint: number
   task: string
+  context?: string
   features: Feature[]
 }
 
-interface EvalResult {
-  passed: boolean
-  tests: string
-  feedback: string
+interface ReviewResult {
+  approved: boolean
+  reviews: { featureId: string; status: string; comment: string }[]
+  overallComment: string
+}
+
+// ─── Sprint file helpers ───
+
+function sprintPath(n: number): string {
+  return resolve(PROGRESS_DIR, `sprint-${n}.json`)
+}
+
+function loadSprint(n: number): Sprint {
+  return JSON.parse(readFileSync(sprintPath(n), 'utf-8'))
+}
+
+function currentSprintNumber(): number {
+  if (!existsSync(PROGRESS_DIR)) return 0
+  const files = readdirSync(PROGRESS_DIR).filter((f) => /^sprint-\d+\.json$/.test(f))
+  if (files.length === 0) return 0
+  return Math.max(...files.map((f) => parseInt(f.match(/\d+/)![0])))
 }
 
 // ─── Prompt loader ───
@@ -69,7 +92,6 @@ const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
 const magenta = (s: string) => `\x1b[35m${s}\x1b[0m`
 
 const ROLE_STYLE: Record<Role, (s: string) => string> = {
-  Planner: cyan,
   Generator: yellow,
   Evaluator: magenta,
 }
@@ -79,15 +101,9 @@ function shortPath(p: string): string {
   return relative(ROOT, p.startsWith('/') ? p : resolve(ROOT, p)) || p
 }
 
-// ─── 每个 Agent 的工具权限 ───
+// ─── Agent 工具权限 ───
 
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
-  Planner: {
-    model: 'claude-sonnet-4-6',
-    allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
-    disallowedTools: ['Edit'],
-    maxTurns: 30,
-  },
   Generator: {
     model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
@@ -97,7 +113,7 @@ const AGENT_CONFIG: Record<Role, Record<string, any>> = {
     model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     disallowedTools: ['Write', 'Edit'],
-    maxTurns: 10,
+    maxTurns: 15,
   },
 }
 
@@ -125,13 +141,15 @@ async function runAgent(
   let sessionId = ''
   let result = ''
   let structured: any
+  const textBlocks: string[] = []   // 收集所有文字，不只是最终 result
 
   for await (const msg of q) {
     if (msg.type === 'assistant') {
       for (const block of ((msg as any).message?.content ?? [])) {
         if (block.type === 'text' && block.text?.trim()) {
-          const text = block.text.trim().replace(/\n/g, ' ').slice(0, 150)
-          console.log(`    ${cyan('>')} ${text}`)
+          const text = block.text.trim()
+          textBlocks.push(text)
+          console.log(`    ${cyan('>')} ${text.replace(/\n/g, ' ').slice(0, 150)}`)
         }
         if (block.type === 'tool_use') {
           logTool(block.name, block.input)
@@ -147,7 +165,10 @@ async function runAgent(
     }
   }
 
-  return { sessionId, result, structured }
+  // 用完整的文字记录（不只是 result 摘要）作为传递给另一个 agent 的内容
+  const fullResponse = textBlocks.join('\n\n') || result
+
+  return { sessionId, result: fullResponse, structured }
 }
 
 function logTool(name: string, input: any): void {
@@ -162,40 +183,120 @@ function logTool(name: string, input: any): void {
   console.log(`    ${(fmts[name] ?? (() => cyan(name)))()}`)
 }
 
-// ─── Phase 0: Planner ───
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Phase 0: negotiate — Sprint Contract 协商
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function plan(task: string): Promise<void> {
-  console.log(bold(`\n  PLAN: "${task}"\n`))
+const REVIEW_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      approved: { type: 'boolean', description: 'true only if ALL features pass review' },
+      reviews: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            featureId: { type: 'string' },
+            status: { type: 'string', enum: ['pass', 'needs-revision'] },
+            comment: { type: 'string', description: 'Always provide a comment, even if passing' },
+          },
+          required: ['featureId', 'status', 'comment'],
+        },
+      },
+      overallComment: { type: 'string', description: 'Cross-cutting concerns, missing features, architectural issues' },
+    },
+    required: ['approved', 'reviews', 'overallComment'],
+  },
+}
+
+async function negotiate(task: string, sprintNum: number, previousReview?: string): Promise<void> {
+  console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
+  const sprintFile = sprintPath(sprintNum)
 
-  await runAgent('Planner', loadPrompt('planner', {
-    task,
-    principles,
-    progressFile: PROGRESS_FILE,
-  }))
+  // Generator 提出/修订计划
+  const genPrompt = previousReview
+    ? loadPrompt('generator-plan-revise', {
+        feedback: previousReview,
+        evaluatorReasoning: '',
+        task,
+        principles,
+        progressFile: sprintFile,
+        sprintNum: String(sprintNum),
+      })
+    : loadPrompt('generator-plan', { task, principles, progressFile: sprintFile })
 
-  if (!existsSync(PROGRESS_FILE)) {
-    console.error(red('\n  Plan failed: progress.json not created'))
+  let gen = await runAgent('Generator', genPrompt)
+
+  if (!existsSync(sprintFile)) {
+    console.error(red(`\n  Negotiation failed: ${sprintFile} not created`))
     process.exit(1)
   }
 
-  const progress: Progress = JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8'))
-  console.log(green(`\n  Plan: ${progress.features.length} features`))
-  for (const f of progress.features) console.log(`    ${dim('·')} ${f.name}`)
+  // Generator ↔ Evaluator 对话协商
+  // 双方通过文字交换观点，只有达成一致才修改文件
+  let generatorSaid = gen.result
+
+  for (let round = 1; round <= MAX_NEGOTIATE_ROUNDS; round++) {
+    // Evaluator 审计划 + 读 Generator 的文字回复
+    const { structured, result: evaluatorSaid } = await runAgent('Evaluator', loadPrompt('evaluator-plan', {
+      task,
+      principles,
+      sprintFile,
+      generatorResponse: generatorSaid,
+    }), { outputFormat: REVIEW_SCHEMA })
+
+    const review = parseReview(structured)
+    if (!review) {
+      console.log(dim('    Could not parse review, proceeding'))
+      break
+    }
+
+    printReview(review)
+
+    if (review.approved) {
+      console.log(green(`\n  Sprint Contract agreed (round ${round})`))
+      break
+    }
+
+    if (round < MAX_NEGOTIATE_ROUNDS) {
+      console.log(`\n    ${yellow('Discussion')} ${dim(`round ${round}/${MAX_NEGOTIATE_ROUNDS}`)}`)
+      // Generator 收到 Evaluator 的完整回复（评论 + 文字论述）
+      // Generator 可以选择：argue back（只说话）或 agree（改文件）
+      const genResponse = await runAgent('Generator', loadPrompt('generator-plan-revise', {
+        feedback: formatReviewFeedback(review),
+        evaluatorReasoning: evaluatorSaid,
+        task,
+        principles,
+        progressFile: sprintFile,
+        sprintNum: String(sprintNum),
+      }), { resume: gen.sessionId })
+
+      generatorSaid = genResponse.result
+    }
+  }
+
+  const sprint = loadSprint(sprintNum)
+  console.log(green(`\n  Sprint ${sprintNum}: ${sprint.features.length} features`))
+  for (const f of sprint.features) console.log(`    ${dim('·')} ${f.name}`)
 }
 
-// ─── Phase 1: Generator ↔ Evaluator ───
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Phase 1: implement — Generator + L1 only
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function execute(): Promise<void> {
-  const progress: Progress = JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8'))
+async function implement(sprintNum: number): Promise<void> {
+  const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
-  const total = progress.features.length
-  const done = progress.features.filter((f) => f.status === 'passing').length
+  const total = sprint.features.length
+  const pending = sprint.features.filter((f) => f.status !== 'passing')
 
-  console.log(bold(`\n  EXECUTE: ${total - done} remaining / ${total} total\n`))
+  console.log(bold(`\n  ══ IMPLEMENT — Sprint ${sprintNum} ══  ${pending.length} features\n`))
 
-  for (let i = 0; i < progress.features.length; i++) {
-    const feature = progress.features[i]
+  for (let i = 0; i < sprint.features.length; i++) {
+    const feature = sprint.features[i]
 
     if (feature.status === 'passing') {
       console.log(`  ${dim(`[${i + 1}/${total}]`)} ${dim(feature.name)} ${green('done')}`)
@@ -204,44 +305,72 @@ async function execute(): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    // Generator: 首次实现
     const { sessionId } = await runAgent('Generator', loadPrompt('generator', {
       principles,
       featurePrompt: feature.prompt,
     }))
 
-    // Evaluate → (fail?) → Feed back → Re-generate → Evaluate
+    // L1 确定性检查
+    const eval_ = parseEvaluation(feature.evaluation)
     let passed = false
 
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      const evalResult = await evaluate(feature, principles)
+    if (eval_.checks.length === 0) {
+      passed = true
+    } else {
+      for (let attempt = 1; attempt <= MAX_L1_RETRIES; attempt++) {
+        const check = runChecks(eval_.checks)
 
-      if (evalResult.passed) {
-        console.log(`    ${green('PASS')} ${dim(evalResult.tests)}`)
-        passed = true
-        break
-      }
+        if (check.pass) {
+          console.log(`    ${green('L1 PASS')}`)
+          passed = true
+          break
+        }
 
-      console.log(`    ${red('FAIL')} ${dim(`attempt ${attempt}/${MAX_RETRIES}`)} ${dim(evalResult.tests)}`)
+        console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${MAX_L1_RETRIES}`)}`)
 
-      if (attempt < MAX_RETRIES) {
-        await runAgent('Generator', loadPrompt('generator-retry', {
-          feedback: evalResult.feedback,
-        }), { resume: sessionId })
+        if (attempt < MAX_L1_RETRIES) {
+          await runAgent('Generator', loadPrompt('generator-retry', {
+            feedback: check.output,
+          }), { resume: sessionId })
+        }
       }
     }
 
     feature.status = passed ? 'passing' : 'failing'
-    writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2))
-    if (!passed) console.log(`    ${red('GAVE UP')}`)
+    writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
+    if (!passed) console.log(`    ${red('L1 gave up')}`)
   }
 
-  const passCount = progress.features.filter((f) => f.status === 'passing').length
-  const filled = Math.round((passCount / total) * 20)
-  console.log(`\n  [${green('█'.repeat(filled))}${dim('░'.repeat(20 - filled))}]  ${passCount}/${total} passing\n`)
+  const passCount = sprint.features.filter((f) => f.status === 'passing').length
+  console.log(`\n  ${progressBar(passCount, total)}  L1: ${passCount}/${total}\n`)
 }
 
-// ─── L1: 确定性检查（零 token，秒级）───
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Phase 2: reviewAll — Evaluator 全局审查
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async function reviewAll(task: string, sprintNum: number): Promise<ReviewResult | null> {
+  console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
+  const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
+
+  const { structured } = await runAgent('Evaluator', loadPrompt('evaluator-review', {
+    task,
+    principles,
+  }), { outputFormat: REVIEW_SCHEMA })
+
+  const review = parseReview(structured)
+  if (!review) {
+    console.log(dim('    Could not parse review'))
+    return null
+  }
+
+  printReview(review)
+  return review
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// L1: 确定性检查
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function parseEvaluation(evaluation: Evaluation | string | undefined): Evaluation {
   if (!evaluation) return { checks: [], intent: '' }
@@ -254,16 +383,13 @@ function runChecks(checks: string[]): { pass: boolean; output: string } {
   for (const cmd of checks) {
     console.log(`    ${dim('$')} ${dim(cmd.slice(0, 100))}`)
     try {
-      const out = execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
+      execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
       results.push(`✓ ${cmd}`)
     } catch (e: any) {
       const output = ((e.stdout ?? '') + (e.stderr ?? '')).trim()
       const tail = output.length > 1500 ? '...\n' + output.slice(-1500) : output
       console.log(`    ${red('✗')} ${dim('check failed')}`)
-      return {
-        pass: false,
-        output: `Command failed: ${cmd}\n\n${tail}`,
-      }
+      return { pass: false, output: `Command failed: ${cmd}\n\n${tail}` }
     }
   }
   if (results.length > 0) {
@@ -272,73 +398,108 @@ function runChecks(checks: string[]): { pass: boolean; output: string } {
   return { pass: true, output: results.join('\n') }
 }
 
-// ─── L2: Evaluator agent（独立验证，耗 token）───
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Review helpers
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const EVAL_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      passed: { type: 'boolean', description: 'true only if the implementation genuinely fulfills the original intent and is robust' },
-      tests: { type: 'string', description: 'summary of what you verified' },
-      feedback: { type: 'string', description: 'If failed: what is wrong and how to fix. Cite file paths and line numbers.' },
-    },
-    required: ['passed', 'tests', 'feedback'],
-  },
-}
-
-async function evaluate(feature: Feature, principles: string): Promise<EvalResult> {
-  const eval_ = parseEvaluation(feature.evaluation)
-
-  // L1: 确定性检查 —— 快速失败，不启动 Evaluator
-  if (eval_.checks.length > 0) {
-    const checkResult = runChecks(eval_.checks)
-    if (!checkResult.pass) {
-      return { passed: false, tests: 'L1 check failed', feedback: checkResult.output }
-    }
+function parseReview(structured: any): ReviewResult | null {
+  if (structured && typeof structured === 'object' && 'approved' in structured) {
+    return structured as ReviewResult
   }
+  return null
+}
 
-  // L2: Evaluator agent —— 独立验证（只收到任务意图，不收到验证指令）
-  const { structured, result } = await runAgent('Evaluator', loadPrompt('evaluator', {
-    featureId: feature.id,
-    featurePrompt: feature.prompt,
-    intent: eval_.intent,
-    principles,
-  }), { outputFormat: EVAL_SCHEMA })
-
-  if (structured && typeof structured === 'object' && 'passed' in structured) {
-    return structured as EvalResult
+function printReview(review: ReviewResult): void {
+  for (const r of review.reviews ?? []) {
+    const icon = r.status === 'pass' ? green('✓') : red('✗')
+    console.log(`    ${icon} ${bold(r.featureId)} ${dim(r.comment.slice(0, 100))}`)
   }
-  return parseEvalText(result)
+  if (review.overallComment) {
+    console.log(`    ${dim('Overall:')} ${dim(review.overallComment.slice(0, 150))}`)
+  }
 }
 
-function parseEvalText(text: string): EvalResult {
-  const m = text.match(/\{[\s\S]*?"passed"[\s\S]*?\}/)
-  if (m) { try { return JSON.parse(m[0]) } catch {} }
-  return { passed: !/fail/i.test(text), tests: '', feedback: text.slice(0, 500) }
+function formatReviewFeedback(review: ReviewResult): string {
+  const lines = (review.reviews ?? [])
+    .filter((r) => r.status === 'needs-revision')
+    .map((r) => `- **${r.featureId}**: ${r.comment}`)
+  return [
+    ...lines,
+    review.overallComment ? `\n**Overall**: ${review.overallComment}` : '',
+  ].join('\n')
 }
 
-// ─── Main ───
+function formatReviewForDiscussion(review: ReviewResult): string {
+  const lines = (review.reviews ?? []).map((r) => {
+    const tag = r.status === 'pass' ? '✓ PASS' : '✗ DISPUTE'
+    return `- [${tag}] **${r.featureId}**: ${r.comment}`
+  })
+  return [
+    '# Evaluator Review Results',
+    '',
+    'The Evaluator has reviewed the implementation. Items marked DISPUTE are open for discussion.',
+    'You may agree (and plan a fix in the next sprint) or disagree (and argue why it\'s correct).',
+    '',
+    'Create a new sprint file with ONLY the features that need rework or are newly added.',
+    'Do NOT include features that are already passing and not under dispute.',
+    '',
+    ...lines,
+    review.overallComment ? `\n**Overall**: ${review.overallComment}` : '',
+  ].join('\n')
+}
+
+function progressBar(done: number, total: number, width = 20): string {
+  const filled = Math.round((done / total) * width)
+  return `[${green('█'.repeat(filled))}${dim('░'.repeat(width - filled))}]`
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Main — Sprint 大循环
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(' ').trim()
 
-  console.log(dim('\n  ─── Harness: Planner → Generator ↔ Evaluator ───\n'))
-
-  const hasPlan = existsSync(PROGRESS_FILE) &&
-    JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8')).features?.length > 0
-
-  if (!hasPlan) {
-    if (!task) {
-      console.error('  Usage: npm start "<task description>"')
-      process.exit(1)
-    }
-    await plan(task)
-  } else if (task) {
-    console.log(dim('  Progress found — resuming. `npm run reset` to start fresh.\n'))
+  if (!task && currentSprintNumber() === 0) {
+    console.error('  Usage: npm start "<task description>"')
+    process.exit(1)
   }
 
-  await execute()
+  console.log(dim('\n  ─── Harness: Generator ↔ Evaluator ───\n'))
+
+  let previousReview: string | undefined
+
+  for (let sprintNum = currentSprintNumber() + 1; sprintNum <= MAX_SPRINTS + currentSprintNumber(); sprintNum++) {
+    console.log(bold(`\n  ━━━━━━━━━━━━━━━━━━━━━━━━━`))
+    console.log(bold(`       Sprint ${sprintNum}`))
+    console.log(bold(`  ━━━━━━━━━━━━━━━━━━━━━━━━━\n`))
+
+    // Phase 0: 协商
+    await negotiate(task, sprintNum, previousReview)
+
+    // Phase 1: 实现 + L1
+    await implement(sprintNum)
+
+    // Phase 2: 全局审查
+    const review = await reviewAll(task, sprintNum)
+
+    if (!review || review.approved) {
+      // 统计所有 sprint 的总 feature 数
+      let totalFeatures = 0
+      for (let s = 1; s <= sprintNum; s++) {
+        if (existsSync(sprintPath(s))) {
+          totalFeatures += loadSprint(s).features.length
+        }
+      }
+      console.log(green(bold(`\n  ✓ ALL APPROVED after ${sprintNum} sprint(s) — ${totalFeatures} features total\n`)))
+      break
+    }
+
+    // 有分歧 → 下一轮讨论
+    previousReview = formatReviewForDiscussion(review)
+    const disputeCount = (review.reviews ?? []).filter((r) => r.status === 'needs-revision').length
+    console.log(yellow(`\n  ${disputeCount} features under dispute → Sprint ${sprintNum + 1}\n`))
+  }
 }
 
 main().catch((e) => { console.error(red('  Error:'), e); process.exit(1) })
