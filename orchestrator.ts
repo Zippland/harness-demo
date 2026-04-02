@@ -1,31 +1,29 @@
 /**
- * Harness Orchestrator — 两阶段闭环控制 + 实时活动流
+ * Harness — Generator ↔ Evaluator 对抗架构
  *
- * 用法:
- *   npm start "帮我做一个 markdown 链接检查 CLI 工具"
- *   npm start                # 续跑上次未完成的 plan
+ * 三个 Agent，各自看到不同的工具集：
+ *   Planner:   Read, Write, Glob, Grep, Bash    → 调研 + 拆任务 + 写测试
+ *   Generator: Read, Write, Edit, Glob, Grep, Bash → 实现代码
+ *   Evaluator: Read, Glob, Grep, Bash            → 跑测试 + 审代码（不能写文件）
+ *
+ * npm start "构建一个 URL 解析库"
  */
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { execSync } from 'child_process'
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve, dirname, relative } from 'path'
 import { fileURLToPath } from 'url'
 
-// ─── Paths ───
+// ─── Paths & Config ───
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const PROJECT_DIR = resolve(ROOT, 'project')
 const PROGRESS_FILE = resolve(ROOT, 'progress.json')
 const PRINCIPLES_FILE = resolve(ROOT, 'control/golden-principles.md')
-
-// ─── Config ───
-
 const MAX_RETRIES = 5
-const MAX_TURNS = 30
-const TEST_TIMEOUT_MS = 60_000
 
 // ─── Types ───
+
+type Role = 'Planner' | 'Generator' | 'Evaluator'
 
 interface Feature {
   id: string
@@ -39,174 +37,143 @@ interface Progress {
   features: Feature[]
 }
 
-// ─── ANSI helpers ───
+interface EvalResult {
+  passed: boolean
+  tests: string
+  feedback: string
+}
+
+// ─── ANSI ───
 
 const dim = (s: string) => `\x1b[2m${s}\x1b[0m`
+const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
 const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
+const magenta = (s: string) => `\x1b[35m${s}\x1b[0m`
+
+const ROLE_STYLE: Record<Role, (s: string) => string> = {
+  Planner: cyan,
+  Generator: yellow,
+  Evaluator: magenta,
+}
 
 function shortPath(p: string): string {
   if (!p) return ''
   return relative(ROOT, p.startsWith('/') ? p : resolve(ROOT, p)) || p
 }
 
-// ─────────────────────────────────────────────────
-// Live Activity Logger
-//
-// 拦截 SDK 的每条消息，把 agent 的工具调用
-// 实时打印出来，让人看到 agent 在做什么。
-// ─────────────────────────────────────────────────
+// ─── 每个 Agent 的工具权限 ───
 
-function logMessage(msg: any): void {
-  // assistant 消息包含 text 和 tool_use 内容块
-  if (msg.type === 'assistant') {
-    const content = msg.message?.content
-    if (!Array.isArray(content)) return
-
-    for (const block of content) {
-      if (block.type === 'text' && block.text?.trim()) {
-        // agent 的思考/说明文字，取前 120 字符
-        const text = block.text.trim().replace(/\n/g, ' ').slice(0, 120)
-        console.log(`    ${dim(text)}`)
-      }
-      if (block.type === 'tool_use') {
-        logToolCall(block.name, block.input)
-      }
-    }
-  }
+const AGENT_CONFIG: Record<Role, Record<string, any>> = {
+  Planner: {
+    allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
+    disallowedTools: ['Edit'],
+    maxTurns: 30,
+  },
+  Generator: {
+    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+    maxTurns: 30,
+  },
+  Evaluator: {
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
+    disallowedTools: ['Write', 'Edit'],
+    maxTurns: 10,
+  },
 }
 
-function logToolCall(name: string, input: any): void {
-  switch (name) {
-    case 'Read':
-      console.log(`    ${cyan('Read')}  ${shortPath(input?.file_path)}`)
-      break
-    case 'Write':
-      console.log(`    ${yellow('Write')} ${shortPath(input?.file_path)}`)
-      break
-    case 'Edit':
-      console.log(`    ${yellow('Edit')}  ${shortPath(input?.file_path)}`)
-      break
-    case 'Bash':
-      console.log(`    ${dim('$')} ${dim((input?.command ?? '').slice(0, 100))}`)
-      break
-    case 'Glob':
-      console.log(`    ${cyan('Glob')}  ${input?.pattern}`)
-      break
-    case 'Grep':
-      console.log(`    ${cyan('Grep')}  "${input?.pattern}"`)
-      break
-    default:
-      console.log(`    ${cyan(name)}`)
-  }
-}
+// ─── Agent Runner ───
 
-// ─────────────────────────────────────────────────
-// Sensor
-// ─────────────────────────────────────────────────
-
-function runTests(pattern: string): { pass: boolean; output: string } {
-  console.log(`    ${cyan('Test')}  vitest --testNamePattern "${pattern}"`)
-  try {
-    const out = execSync(
-      `npx vitest run --testNamePattern "${pattern}" --reporter verbose 2>&1`,
-      { cwd: PROJECT_DIR, encoding: 'utf-8', timeout: TEST_TIMEOUT_MS },
-    )
-    return { pass: true, output: tail(out) }
-  } catch (e: any) {
-    return { pass: false, output: tail((e.stdout ?? '') + (e.stderr ?? '')) }
-  }
-}
-
-function tail(s: string, max = 3000): string {
-  return s.length > max ? '...(truncated)\n' + s.slice(-max) : s
-}
-
-/** 从 vitest 输出中提取通过/失败数 */
-function parseTestSummary(output: string): string {
-  const match = output.match(/Tests\s+(.+)/)
-  return match ? match[1].trim() : ''
-}
-
-// ─────────────────────────────────────────────────
-// Actuator
-// ─────────────────────────────────────────────────
-
-async function sendToAgent(
+async function runAgent(
+  role: Role,
   prompt: string,
-  opts: { cwd: string; resume?: string; label?: string } = { cwd: ROOT },
-): Promise<string> {
-  let sessionId = ''
-
-  if (opts.label) {
-    console.log(`\n  ${dim(`── ${opts.label} ──`)}`)
-  }
+  opts: { resume?: string; outputFormat?: any } = {},
+): Promise<{ sessionId: string; result: string; structured?: any }> {
+  const color = ROLE_STYLE[role]
+  console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
 
   const q = query({
     prompt,
     options: {
-      cwd: opts.cwd,
-      allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
-      permissionMode: 'acceptEdits',
-      maxTurns: MAX_TURNS,
+      cwd: ROOT,
+      permissionMode: 'acceptEdits' as const,
+      ...AGENT_CONFIG[role],
       ...(opts.resume ? { resume: opts.resume } : {}),
+      ...(opts.outputFormat ? { outputFormat: opts.outputFormat } : {}),
     },
   })
 
-  for await (const msg of q) {
-    logMessage(msg)
+  let sessionId = ''
+  let result = ''
+  let structured: any
 
-    if ('session_id' in msg && msg.session_id) {
-      sessionId = msg.session_id as string
+  for await (const msg of q) {
+    // 实时打印 agent 活动
+    if (msg.type === 'assistant') {
+      for (const block of ((msg as any).message?.content ?? [])) {
+        if (block.type === 'text' && block.text?.trim()) {
+          console.log(`    ${dim(block.text.trim().replace(/\n/g, ' ').slice(0, 120))}`)
+        }
+        if (block.type === 'tool_use') {
+          logTool(block.name, block.input)
+        }
+      }
+    }
+    if ('session_id' in msg && (msg as any).session_id) {
+      sessionId = (msg as any).session_id
+    }
+    if (msg.type === 'result' && (msg as any).subtype === 'success') {
+      result = (msg as any).result ?? ''
+      structured = (msg as any).structured_output
     }
   }
 
-  return sessionId
+  return { sessionId, result, structured }
 }
 
-// ─────────────────────────────────────────────────
-// Phase 0 — Plan
-// ─────────────────────────────────────────────────
+function logTool(name: string, input: any): void {
+  const fmts: Record<string, () => string> = {
+    Read:  () => `${cyan('Read')}  ${shortPath(input?.file_path)}`,
+    Write: () => `${yellow('Write')} ${shortPath(input?.file_path)}`,
+    Edit:  () => `${yellow('Edit')}  ${shortPath(input?.file_path)}`,
+    Bash:  () => `${dim('$')} ${dim((input?.command ?? '').slice(0, 100))}`,
+    Glob:  () => `${cyan('Glob')}  ${input?.pattern ?? ''}`,
+    Grep:  () => `${cyan('Grep')}  "${(input?.pattern ?? '').slice(0, 60)}"`,
+  }
+  console.log(`    ${(fmts[name] ?? (() => cyan(name)))()}`)
+}
+
+// ─── Phase 0: Planner ───
 
 async function plan(task: string): Promise<void> {
   console.log(bold(`\n  PLAN: "${task}"\n`))
-
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
 
-  await sendToAgent(
-    `
-You are the Planner in a test-driven harness. Your job is to scaffold a project
-so that a separate Executor agent can implement it feature by feature.
+  await runAgent('Planner', `
+You are the Planner in a three-agent harness (Planner → Generator → Evaluator).
+Research the task, decompose it, write tests, and create a development plan.
 
 # Task
 ${task}
 
-# What you must produce
+# You must produce these files
 
 ## 1. project/tests/index.test.ts
-Write comprehensive vitest tests — these are the acceptance criteria.
+Comprehensive vitest tests — these are the Evaluator's acceptance criteria.
 - 5–10 describe() blocks, one per feature
 - At least 4 it() cases per feature, including edge cases
-- Tests must be deterministic: no network, no real filesystem
+- Tests must be deterministic (no network, no random)
 
 ## 2. project/src/index.ts
-Export every function tested above as a stub:
-  export function foo(...): ReturnType { throw new Error('Not implemented') }
+Export every function as a stub: throw new Error('Not implemented')
 
-## 3. progress.json  (write to: ${PROGRESS_FILE})
+## 3. ${PROGRESS_FILE}
 \`\`\`json
 {
   "task": "<original task>",
   "features": [
-    {
-      "id": "<must exactly match the describe() block name>",
-      "name": "<short display name>",
-      "prompt": "<one paragraph: what to implement and key constraints>",
-      "status": "pending"
-    }
+    { "id": "<MUST match describe() block name>", "name": "<display name>", "prompt": "<implementation instructions>", "status": "pending" }
   ]
 }
 \`\`\`
@@ -215,36 +182,26 @@ Export every function tested above as a stub:
 ${principles}
 
 # Rules
-- feature.id MUST exactly match the describe() block name in the tests
+- feature.id MUST exactly match the describe() block name in tests
 - Write tests FIRST, stubs SECOND, progress.json THIRD
-- Do not implement any logic — only stubs
-- Keep the project self-contained (no external API calls, no network)
-`.trim(),
-    { cwd: ROOT, label: 'Planner Agent' },
-  )
+- Do NOT implement logic — stubs only
+`.trim())
 
-  // 验证 plan 输出
   if (!existsSync(PROGRESS_FILE)) {
     console.error(red('\n  Plan failed: progress.json not created'))
     process.exit(1)
   }
 
   const progress: Progress = JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8'))
-  console.log(green(`\n  Plan complete: ${progress.features.length} features\n`))
-
-  for (const f of progress.features) {
-    console.log(`    ${dim('·')} ${f.name}`)
-  }
+  console.log(green(`\n  Plan: ${progress.features.length} features`))
+  for (const f of progress.features) console.log(`    ${dim('·')} ${f.name}`)
 }
 
-// ─────────────────────────────────────────────────
-// Phase 1 — Execute
-// ─────────────────────────────────────────────────
+// ─── Phase 1: Generator ↔ Evaluator ───
 
 async function execute(): Promise<void> {
   const progress: Progress = JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8'))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
-
   const total = progress.features.length
   const done = progress.features.filter((f) => f.status === 'passing').length
 
@@ -260,9 +217,8 @@ async function execute(): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    // Step 1: agent 实现
-    const sessionId = await sendToAgent(
-      `
+    // ── Generator: 首次实现 ──
+    const { sessionId } = await runAgent('Generator', `
 # Golden Principles
 ${principles}
 
@@ -271,98 +227,118 @@ ${feature.prompt}
 
 # Constraints
 - Only modify files under project/src/
-- Do NOT modify project/tests/ — tests are fixed acceptance criteria
-- Do NOT run tests — the harness runs them independently
-- Export all functions from project/src/index.ts
-`.trim(),
-      { cwd: ROOT, label: 'Executor Agent' },
-    )
+- Do NOT modify project/tests/ — those are the Evaluator's criteria
+- Do NOT run tests — the Evaluator does that
+`.trim())
 
-    // Step 2: 反馈回路
+    // ── Evaluate → (fail?) → Feed back → Re-generate → Evaluate ──
     let passed = false
-    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-      const test = runTests(feature.id)
-      const summary = parseTestSummary(test.output)
 
-      if (test.pass) {
-        console.log(`    ${green(`PASS`)} ${summary ? dim(summary) : ''}`)
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      // Evaluator: 独立验证
+      const evalResult = await evaluate(feature, principles)
+
+      if (evalResult.passed) {
+        console.log(`    ${green('PASS')} ${dim(evalResult.tests)}`)
         passed = true
         break
       }
 
-      console.log(`    ${red(`FAIL`)} ${dim(`attempt ${attempt}/${MAX_RETRIES}`)} ${summary ? dim(summary) : ''}`)
+      console.log(`    ${red('FAIL')} ${dim(`attempt ${attempt}/${MAX_RETRIES}`)} ${dim(evalResult.tests)}`)
 
       if (attempt < MAX_RETRIES) {
-        await sendToAgent(
-          `
-## Test Failure — attempt ${attempt}/${MAX_RETRIES}
+        // 把 Evaluator 的反馈喂回 Generator（resume 同一 session）
+        await runAgent('Generator', `
+The Evaluator rejected your implementation.
 
-\`\`\`
-${test.output}
-\`\`\`
+## Evaluator Feedback
+${evalResult.feedback}
 
-Analyze the root cause and fix. Do NOT modify test files.
-`.trim(),
-          { cwd: ROOT, resume: sessionId, label: `Fix (attempt ${attempt + 1})` },
-        )
+Fix the issues. Do NOT modify test files.
+`.trim(), { resume: sessionId })
       }
     }
 
-    // Step 3: 持久化
     feature.status = passed ? 'passing' : 'failing'
     writeFileSync(PROGRESS_FILE, JSON.stringify(progress, null, 2))
-
-    if (!passed) {
-      console.log(`    ${red('GAVE UP')}`)
-    }
+    if (!passed) console.log(`    ${red('GAVE UP')}`)
   }
 
-  // ── Summary ──
+  // Summary
   const passCount = progress.features.filter((f) => f.status === 'passing').length
-  const bar = progressBar(passCount, total)
-  console.log(`\n  ${bar}  ${passCount}/${total} passing\n`)
+  const filled = Math.round((passCount / total) * 20)
+  console.log(`\n  [${green('█'.repeat(filled))}${dim('░'.repeat(20 - filled))}]  ${passCount}/${total} passing\n`)
+}
 
-  if (passCount < total) {
-    const failing = progress.features.filter((f) => f.status === 'failing').map((f) => f.name)
-    console.log(dim(`  Failing: ${failing.join(', ')}`))
-    console.log(dim('  Re-run to retry, or `npm run reset` to start fresh.\n'))
+// ─── Evaluator ───
+
+const EVAL_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      passed: { type: 'boolean', description: 'true only if ALL tests pass AND code follows golden principles' },
+      tests: { type: 'string', description: 'e.g. "4 passed, 0 failed"' },
+      feedback: { type: 'string', description: 'If failed: what is wrong, which tests fail, how to fix. Cite file paths and line numbers.' },
+    },
+    required: ['passed', 'tests', 'feedback'],
+  },
+}
+
+async function evaluate(feature: Feature, principles: string): Promise<EvalResult> {
+  const { structured, result } = await runAgent('Evaluator', `
+You are the Evaluator. Independently verify the Generator's work.
+You CANNOT modify files — only read and run commands.
+
+# Feature
+ID: ${feature.id}
+${feature.prompt}
+
+# Steps
+1. Run: cd project && npx vitest run --testNamePattern "${feature.id}" --reporter verbose
+2. Read the implementation in project/src/index.ts
+3. Check against these golden principles:
+${principles}
+
+# Decision
+- ALL tests pass AND code follows principles → passed: true
+- ANY test fails OR principles violated → passed: false with specific feedback
+`.trim(), { outputFormat: EVAL_SCHEMA })
+
+  // 优先用 structured output，fallback 到文本解析
+  if (structured && typeof structured === 'object' && 'passed' in structured) {
+    return structured as EvalResult
   }
+  return parseEvalText(result)
 }
 
-function progressBar(done: number, total: number, width = 20): string {
-  const filled = Math.round((done / total) * width)
-  const bar = green('█'.repeat(filled)) + dim('░'.repeat(width - filled))
-  return `[${bar}]`
+function parseEvalText(text: string): EvalResult {
+  const m = text.match(/\{[\s\S]*?"passed"[\s\S]*?\}/)
+  if (m) { try { return JSON.parse(m[0]) } catch {} }
+  return { passed: !/fail/i.test(text), tests: '', feedback: text.slice(0, 500) }
 }
 
-// ─────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────
+// ─── Main ───
 
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(' ').trim()
 
-  console.log(dim('\n  ─── Harness Demo ───\n'))
+  console.log(dim('\n  ─── Harness: Planner → Generator ↔ Evaluator ───\n'))
 
-  const hasPlan =
-    existsSync(PROGRESS_FILE) &&
+  const hasPlan = existsSync(PROGRESS_FILE) &&
     JSON.parse(readFileSync(PROGRESS_FILE, 'utf-8')).features?.length > 0
 
   if (!hasPlan) {
     if (!task) {
       console.error('  Usage: npm start "<task description>"')
-      console.error('  Example: npm start "Build a URL slug generator library"\n')
       process.exit(1)
     }
     await plan(task)
   } else if (task) {
-    console.log(dim('  Progress found — resuming. Run `npm run reset` to start fresh.\n'))
+    console.log(dim('  Progress found — resuming. `npm run reset` to start fresh.\n'))
   }
 
   await execute()
 }
 
-main().catch((err) => {
-  console.error(red('  Harness error:'), err)
-  process.exit(1)
-})
+main().catch((e) => { console.error(red('  Error:'), e); process.exit(1) })

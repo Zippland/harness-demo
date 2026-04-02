@@ -1,396 +1,317 @@
 import { describe, it, expect } from 'vitest';
 import {
-  formatDate,
-  parseDate,
-  getRelativeTime,
-  getRelativeTimeFromNow,
-  dateDiff,
-  dateDiffInDays,
-  dateDiffInMonths,
-  dateDiffInYears,
-  addDays,
-  addMonths,
-  isValidDate,
+  parseSection,
+  parseKeyValue,
+  isComment,
+  parseIni,
+  serializeIni,
+  type IniData,
 } from '../src/index';
 
-describe('formatDate', () => {
-  it('should format date with YYYY-MM-DD pattern', () => {
-    const date = new Date(2024, 0, 15); // January 15, 2024
-    expect(formatDate(date, 'YYYY-MM-DD')).toBe('2024-01-15');
+describe('parseSection', () => {
+  it('should parse a valid section header', () => {
+    expect(parseSection('[database]')).toBe('database');
   });
 
-  it('should format date with DD/MM/YYYY pattern', () => {
-    const date = new Date(2024, 11, 25); // December 25, 2024
-    expect(formatDate(date, 'DD/MM/YYYY')).toBe('25/12/2024');
+  it('should parse section header with spaces inside brackets', () => {
+    expect(parseSection('[ database ]')).toBe('database');
   });
 
-  it('should format date with MM-DD-YYYY pattern', () => {
-    const date = new Date(2024, 5, 7); // June 7, 2024
-    expect(formatDate(date, 'MM-DD-YYYY')).toBe('06-07-2024');
+  it('should parse section header with leading/trailing whitespace', () => {
+    expect(parseSection('  [server]  ')).toBe('server');
   });
 
-  it('should format date with YYYY/MM/DD HH:mm:ss pattern', () => {
-    const date = new Date(2024, 2, 10, 14, 30, 45); // March 10, 2024 14:30:45
-    expect(formatDate(date, 'YYYY/MM/DD HH:mm:ss')).toBe('2024/03/10 14:30:45');
+  it('should return null for non-section lines', () => {
+    expect(parseSection('key=value')).toBeNull();
+    expect(parseSection('# comment')).toBeNull();
+    expect(parseSection('')).toBeNull();
   });
 
-  it('should handle single digit months and days with padding', () => {
-    const date = new Date(2024, 0, 5); // January 5, 2024
-    expect(formatDate(date, 'YYYY-MM-DD')).toBe('2024-01-05');
+  it('should return null for malformed section headers', () => {
+    expect(parseSection('[unclosed')).toBeNull();
+    expect(parseSection('unopened]')).toBeNull();
+    expect(parseSection('[]')).toBeNull();
   });
 
-  it('should format date with custom separators', () => {
-    const date = new Date(2024, 6, 20); // July 20, 2024
-    expect(formatDate(date, 'YYYY.MM.DD')).toBe('2024.07.20');
-  });
-});
-
-describe('parseDate', () => {
-  it('should parse YYYY-MM-DD format string', () => {
-    const result = parseDate('2024-01-15', 'YYYY-MM-DD');
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(0); // January
-    expect(result.getDate()).toBe(15);
-  });
-
-  it('should parse DD/MM/YYYY format string', () => {
-    const result = parseDate('25/12/2024', 'DD/MM/YYYY');
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(11); // December
-    expect(result.getDate()).toBe(25);
-  });
-
-  it('should parse MM-DD-YYYY format string', () => {
-    const result = parseDate('06-07-2024', 'MM-DD-YYYY');
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(5); // June
-    expect(result.getDate()).toBe(7);
-  });
-
-  it('should throw error for invalid date string', () => {
-    expect(() => parseDate('invalid', 'YYYY-MM-DD')).toThrow();
-  });
-
-  it('should throw error for mismatched format', () => {
-    expect(() => parseDate('2024-01-15', 'DD/MM/YYYY')).toThrow();
+  it('should handle section names with special characters', () => {
+    expect(parseSection('[section.name]')).toBe('section.name');
+    expect(parseSection('[section-name]')).toBe('section-name');
+    expect(parseSection('[section_name]')).toBe('section_name');
   });
 });
 
-describe('getRelativeTime', () => {
-  it('should return "just now" for dates less than a minute apart', () => {
-    const now = new Date(2024, 0, 15, 12, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 30);
-    expect(getRelativeTime(date, now)).toBe('just now');
+describe('parseKeyValue', () => {
+  it('should parse a simple key=value pair', () => {
+    expect(parseKeyValue('host=localhost')).toEqual({ key: 'host', value: 'localhost' });
   });
 
-  it('should return "X minutes ago" for dates minutes apart', () => {
-    const now = new Date(2024, 0, 15, 12, 30, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('30 minutes ago');
+  it('should handle values with equals signs', () => {
+    expect(parseKeyValue('equation=a=b+c')).toEqual({ key: 'equation', value: 'a=b+c' });
   });
 
-  it('should return "1 minute ago" for singular minute', () => {
-    const now = new Date(2024, 0, 15, 12, 1, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('1 minute ago');
+  it('should trim whitespace around key and value', () => {
+    expect(parseKeyValue('  key  =  value  ')).toEqual({ key: 'key', value: 'value' });
   });
 
-  it('should return "X hours ago" for dates hours apart', () => {
-    const now = new Date(2024, 0, 15, 15, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('3 hours ago');
+  it('should return null for lines without equals sign', () => {
+    expect(parseKeyValue('no equals here')).toBeNull();
+    expect(parseKeyValue('[section]')).toBeNull();
   });
 
-  it('should return "X days ago" for dates days apart', () => {
-    const now = new Date(2024, 0, 18, 12, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('3 days ago');
+  it('should return null for empty key', () => {
+    expect(parseKeyValue('=value')).toBeNull();
+    expect(parseKeyValue('  =value')).toBeNull();
   });
 
-  it('should return "X weeks ago" for dates weeks apart', () => {
-    const now = new Date(2024, 0, 29, 12, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('2 weeks ago');
+  it('should handle empty value', () => {
+    expect(parseKeyValue('key=')).toEqual({ key: 'key', value: '' });
+    expect(parseKeyValue('key=  ')).toEqual({ key: 'key', value: '' });
   });
 
-  it('should return "X months ago" for dates months apart', () => {
-    const now = new Date(2024, 3, 15, 12, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('3 months ago');
+  it('should handle quoted values', () => {
+    expect(parseKeyValue('path="C:\\Program Files"')).toEqual({ key: 'path', value: 'C:\\Program Files' });
+    expect(parseKeyValue("name='John Doe'")).toEqual({ key: 'name', value: 'John Doe' });
   });
 
-  it('should return "X years ago" for dates years apart', () => {
-    const now = new Date(2026, 0, 15, 12, 0, 0);
-    const date = new Date(2024, 0, 15, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('2 years ago');
-  });
-
-  it('should return future relative time for dates in the future', () => {
-    const now = new Date(2024, 0, 15, 12, 0, 0);
-    const date = new Date(2024, 0, 18, 12, 0, 0);
-    expect(getRelativeTime(date, now)).toBe('in 3 days');
+  it('should preserve internal whitespace in values', () => {
+    expect(parseKeyValue('message=hello world')).toEqual({ key: 'message', value: 'hello world' });
   });
 });
 
-describe('getRelativeTimeFromNow', () => {
-  it('should calculate relative time from current moment', () => {
-    // This test uses a fixed reference to ensure determinism
-    const fixedNow = new Date(2024, 0, 15, 12, 0, 0);
-    const pastDate = new Date(2024, 0, 12, 12, 0, 0);
-    // We test the underlying function behavior with explicit reference
-    expect(getRelativeTime(pastDate, fixedNow)).toBe('3 days ago');
+describe('isComment', () => {
+  it('should identify semicolon comments', () => {
+    expect(isComment('; this is a comment')).toBe(true);
+    expect(isComment(';comment')).toBe(true);
   });
 
-  it('should handle dates in the past', () => {
-    const fixedNow = new Date(2024, 0, 15, 12, 0, 0);
-    const pastDate = new Date(2024, 0, 14, 12, 0, 0);
-    expect(getRelativeTime(pastDate, fixedNow)).toBe('1 day ago');
+  it('should identify hash comments', () => {
+    expect(isComment('# this is a comment')).toBe(true);
+    expect(isComment('#comment')).toBe(true);
   });
 
-  it('should handle dates in the future', () => {
-    const fixedNow = new Date(2024, 0, 15, 12, 0, 0);
-    const futureDate = new Date(2024, 0, 20, 12, 0, 0);
-    expect(getRelativeTime(futureDate, fixedNow)).toBe('in 5 days');
+  it('should handle comments with leading whitespace', () => {
+    expect(isComment('  ; indented comment')).toBe(true);
+    expect(isComment('\t# tab comment')).toBe(true);
   });
 
-  it('should handle same day different times', () => {
-    const fixedNow = new Date(2024, 0, 15, 15, 0, 0);
-    const earlierToday = new Date(2024, 0, 15, 10, 0, 0);
-    expect(getRelativeTime(earlierToday, fixedNow)).toBe('5 hours ago');
-  });
-});
-
-describe('dateDiff', () => {
-  it('should return difference in milliseconds', () => {
-    const date1 = new Date(2024, 0, 15, 12, 0, 0);
-    const date2 = new Date(2024, 0, 15, 12, 0, 1);
-    expect(dateDiff(date1, date2, 'milliseconds')).toBe(1000);
+  it('should not identify non-comments', () => {
+    expect(isComment('key=value')).toBe(false);
+    expect(isComment('[section]')).toBe(false);
+    expect(isComment('not a comment ; inline')).toBe(false);
   });
 
-  it('should return difference in seconds', () => {
-    const date1 = new Date(2024, 0, 15, 12, 0, 0);
-    const date2 = new Date(2024, 0, 15, 12, 1, 0);
-    expect(dateDiff(date1, date2, 'seconds')).toBe(60);
-  });
-
-  it('should return difference in minutes', () => {
-    const date1 = new Date(2024, 0, 15, 12, 0, 0);
-    const date2 = new Date(2024, 0, 15, 14, 0, 0);
-    expect(dateDiff(date1, date2, 'minutes')).toBe(120);
-  });
-
-  it('should return difference in hours', () => {
-    const date1 = new Date(2024, 0, 15, 0, 0, 0);
-    const date2 = new Date(2024, 0, 16, 0, 0, 0);
-    expect(dateDiff(date1, date2, 'hours')).toBe(24);
-  });
-
-  it('should return difference in days', () => {
-    const date1 = new Date(2024, 0, 1);
-    const date2 = new Date(2024, 0, 31);
-    expect(dateDiff(date1, date2, 'days')).toBe(30);
-  });
-
-  it('should handle negative differences (date1 > date2)', () => {
-    const date1 = new Date(2024, 0, 31);
-    const date2 = new Date(2024, 0, 1);
-    expect(dateDiff(date1, date2, 'days')).toBe(-30);
+  it('should handle empty strings and whitespace-only lines', () => {
+    expect(isComment('')).toBe(false);
+    expect(isComment('   ')).toBe(false);
+    expect(isComment('\t')).toBe(false);
   });
 });
 
-describe('dateDiffInDays', () => {
-  it('should return exact number of days between two dates', () => {
-    const date1 = new Date(2024, 0, 1);
-    const date2 = new Date(2024, 0, 15);
-    expect(dateDiffInDays(date1, date2)).toBe(14);
+describe('parseIni', () => {
+  it('should parse a simple INI file with one section', () => {
+    const ini = `
+[database]
+host=localhost
+port=3306
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      database: {
+        host: 'localhost',
+        port: '3306',
+      },
+    });
   });
 
-  it('should handle dates across months', () => {
-    const date1 = new Date(2024, 0, 15);
-    const date2 = new Date(2024, 1, 15);
-    expect(dateDiffInDays(date1, date2)).toBe(31);
+  it('should parse multiple sections', () => {
+    const ini = `
+[server]
+host=example.com
+
+[database]
+host=db.example.com
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      server: { host: 'example.com' },
+      database: { host: 'db.example.com' },
+    });
   });
 
-  it('should handle dates across years', () => {
-    const date1 = new Date(2023, 11, 31);
-    const date2 = new Date(2024, 0, 1);
-    expect(dateDiffInDays(date1, date2)).toBe(1);
+  it('should ignore comments', () => {
+    const ini = `
+; This is a comment
+[config]
+# Another comment
+key=value
+; inline style not supported
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      config: { key: 'value' },
+    });
   });
 
-  it('should return 0 for same date', () => {
-    const date1 = new Date(2024, 0, 15);
-    const date2 = new Date(2024, 0, 15);
-    expect(dateDiffInDays(date1, date2)).toBe(0);
+  it('should handle global keys without section', () => {
+    const ini = `
+global_key=global_value
+[section]
+key=value
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      '': { global_key: 'global_value' },
+      section: { key: 'value' },
+    });
   });
 
-  it('should handle leap years', () => {
-    const date1 = new Date(2024, 1, 28); // Feb 28, 2024 (leap year)
-    const date2 = new Date(2024, 2, 1); // Mar 1, 2024
-    expect(dateDiffInDays(date1, date2)).toBe(2);
-  });
-});
-
-describe('dateDiffInMonths', () => {
-  it('should return exact number of months between two dates', () => {
-    const date1 = new Date(2024, 0, 15);
-    const date2 = new Date(2024, 6, 15);
-    expect(dateDiffInMonths(date1, date2)).toBe(6);
+  it('should handle empty input', () => {
+    expect(parseIni('')).toEqual({});
+    expect(parseIni('   \n\n  ')).toEqual({});
   });
 
-  it('should handle dates across years', () => {
-    const date1 = new Date(2023, 6, 15);
-    const date2 = new Date(2024, 6, 15);
-    expect(dateDiffInMonths(date1, date2)).toBe(12);
+  it('should handle duplicate keys (last value wins)', () => {
+    const ini = `
+[section]
+key=first
+key=second
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      section: { key: 'second' },
+    });
   });
 
-  it('should return partial months as floor value', () => {
-    const date1 = new Date(2024, 0, 1);
-    const date2 = new Date(2024, 1, 15);
-    expect(dateDiffInMonths(date1, date2)).toBe(1);
+  it('should handle Windows-style line endings (CRLF)', () => {
+    const ini = '[section]\r\nkey=value\r\n';
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      section: { key: 'value' },
+    });
   });
 
-  it('should return 0 for dates within same month', () => {
-    const date1 = new Date(2024, 0, 1);
-    const date2 = new Date(2024, 0, 31);
-    expect(dateDiffInMonths(date1, date2)).toBe(0);
-  });
-});
+  it('should skip empty lines', () => {
+    const ini = `
+[section]
 
-describe('dateDiffInYears', () => {
-  it('should return exact number of years between two dates', () => {
-    const date1 = new Date(2020, 0, 15);
-    const date2 = new Date(2024, 0, 15);
-    expect(dateDiffInYears(date1, date2)).toBe(4);
-  });
+key1=value1
 
-  it('should return partial years as floor value', () => {
-    const date1 = new Date(2020, 0, 15);
-    const date2 = new Date(2024, 6, 15);
-    expect(dateDiffInYears(date1, date2)).toBe(4);
-  });
+key2=value2
 
-  it('should return 0 for dates within same year', () => {
-    const date1 = new Date(2024, 0, 1);
-    const date2 = new Date(2024, 11, 31);
-    expect(dateDiffInYears(date1, date2)).toBe(0);
-  });
-
-  it('should handle century boundaries', () => {
-    const date1 = new Date(1999, 11, 31);
-    const date2 = new Date(2000, 0, 1);
-    expect(dateDiffInYears(date1, date2)).toBe(0);
-  });
-});
-
-describe('addDays', () => {
-  it('should add positive days to a date', () => {
-    const date = new Date(2024, 0, 15);
-    const result = addDays(date, 10);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(0);
-    expect(result.getDate()).toBe(25);
-  });
-
-  it('should subtract days when given negative value', () => {
-    const date = new Date(2024, 0, 15);
-    const result = addDays(date, -10);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(0);
-    expect(result.getDate()).toBe(5);
-  });
-
-  it('should handle month boundary crossings', () => {
-    const date = new Date(2024, 0, 25);
-    const result = addDays(date, 10);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(1); // February
-    expect(result.getDate()).toBe(4);
-  });
-
-  it('should handle year boundary crossings', () => {
-    const date = new Date(2023, 11, 25);
-    const result = addDays(date, 10);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(0);
-    expect(result.getDate()).toBe(4);
-  });
-
-  it('should not mutate the original date', () => {
-    const date = new Date(2024, 0, 15);
-    const originalTime = date.getTime();
-    addDays(date, 10);
-    expect(date.getTime()).toBe(originalTime);
+`;
+    const result = parseIni(ini);
+    expect(result).toEqual({
+      section: { key1: 'value1', key2: 'value2' },
+    });
   });
 });
 
-describe('addMonths', () => {
-  it('should add positive months to a date', () => {
-    const date = new Date(2024, 0, 15);
-    const result = addMonths(date, 3);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(3); // April
-    expect(result.getDate()).toBe(15);
+describe('serializeIni', () => {
+  it('should serialize a simple INI structure', () => {
+    const data: IniData = {
+      database: {
+        host: 'localhost',
+        port: '3306',
+      },
+    };
+    const result = serializeIni(data);
+    expect(result).toBe('[database]\nhost=localhost\nport=3306\n');
   });
 
-  it('should subtract months when given negative value', () => {
-    const date = new Date(2024, 6, 15);
-    const result = addMonths(date, -3);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(3); // April
-    expect(result.getDate()).toBe(15);
+  it('should serialize multiple sections', () => {
+    const data: IniData = {
+      server: { host: 'example.com' },
+      database: { host: 'db.example.com' },
+    };
+    const result = serializeIni(data);
+    expect(result).toContain('[server]');
+    expect(result).toContain('[database]');
+    expect(result).toContain('host=example.com');
+    expect(result).toContain('host=db.example.com');
   });
 
-  it('should handle year boundary crossings', () => {
-    const date = new Date(2024, 10, 15);
-    const result = addMonths(date, 3);
-    expect(result.getFullYear()).toBe(2025);
-    expect(result.getMonth()).toBe(1); // February
-    expect(result.getDate()).toBe(15);
+  it('should handle global section (empty string key)', () => {
+    const data: IniData = {
+      '': { global: 'value' },
+      section: { key: 'value' },
+    };
+    const result = serializeIni(data);
+    expect(result).toMatch(/^global=value\n/);
+    expect(result).toContain('[section]');
   });
 
-  it('should handle month-end overflow (31st to 30-day month)', () => {
-    const date = new Date(2024, 0, 31); // January 31
-    const result = addMonths(date, 1);
-    expect(result.getFullYear()).toBe(2024);
-    expect(result.getMonth()).toBe(1); // February
-    // Should clamp to last day of February (29 in leap year 2024)
-    expect(result.getDate()).toBe(29);
+  it('should handle empty data', () => {
+    expect(serializeIni({})).toBe('');
   });
 
-  it('should not mutate the original date', () => {
-    const date = new Date(2024, 0, 15);
-    const originalTime = date.getTime();
-    addMonths(date, 3);
-    expect(date.getTime()).toBe(originalTime);
+  it('should handle empty sections', () => {
+    const data: IniData = {
+      empty: {},
+    };
+    const result = serializeIni(data);
+    expect(result).toBe('[empty]\n');
+  });
+
+  it('should preserve values with special characters', () => {
+    const data: IniData = {
+      paths: {
+        dir: 'C:\\Program Files',
+        url: 'https://example.com?a=1&b=2',
+      },
+    };
+    const result = serializeIni(data);
+    expect(result).toContain('dir=C:\\Program Files');
+    expect(result).toContain('url=https://example.com?a=1&b=2');
   });
 });
 
-describe('isValidDate', () => {
-  it('should return true for valid Date object', () => {
-    const date = new Date(2024, 0, 15);
-    expect(isValidDate(date)).toBe(true);
+describe('roundtrip', () => {
+  it('should parse and serialize back to equivalent INI', () => {
+    const original = `[database]
+host=localhost
+port=3306
+`;
+    const parsed = parseIni(original);
+    const serialized = serializeIni(parsed);
+    const reparsed = parseIni(serialized);
+    expect(reparsed).toEqual(parsed);
   });
 
-  it('should return false for Invalid Date', () => {
-    const date = new Date('invalid');
-    expect(isValidDate(date)).toBe(false);
+  it('should handle complex INI with multiple sections', () => {
+    const original = `[server]
+host=example.com
+port=8080
+
+[database]
+host=db.local
+user=admin
+password=secret
+`;
+    const parsed = parseIni(original);
+    const serialized = serializeIni(parsed);
+    const reparsed = parseIni(serialized);
+    expect(reparsed).toEqual(parsed);
   });
 
-  it('should return false for null', () => {
-    expect(isValidDate(null as unknown as Date)).toBe(false);
+  it('should handle global keys in roundtrip', () => {
+    const original = `global=value
+
+[section]
+key=value
+`;
+    const parsed = parseIni(original);
+    const serialized = serializeIni(parsed);
+    const reparsed = parseIni(serialized);
+    expect(reparsed).toEqual(parsed);
   });
 
-  it('should return false for undefined', () => {
-    expect(isValidDate(undefined as unknown as Date)).toBe(false);
-  });
-
-  it('should return true for date at epoch', () => {
-    const date = new Date(0);
-    expect(isValidDate(date)).toBe(true);
-  });
-
-  it('should return true for very old dates', () => {
-    const date = new Date(1900, 0, 1);
-    expect(isValidDate(date)).toBe(true);
+  it('should handle values with equals signs in roundtrip', () => {
+    const original = `[math]
+equation=a=b+c
+`;
+    const parsed = parseIni(original);
+    const serialized = serializeIni(parsed);
+    const reparsed = parseIni(serialized);
+    expect(reparsed).toEqual(parsed);
   });
 });
