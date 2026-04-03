@@ -44,10 +44,16 @@ interface Feature {
   status: 'pending' | 'failing' | 'passing'
 }
 
+interface ReviewDimension {
+  name: string
+  description: string
+}
+
 interface Sprint {
   sprint: number
   task: string
   phase: 'negotiate' | 'implement' | 'review' | 'done'
+  reviewDimensions: ReviewDimension[]
   context?: string
   previousReview?: string
   features: Feature[]
@@ -109,13 +115,11 @@ const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Generator: {
     model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
-    maxTurns: 30,
   },
   Evaluator: {
     model: 'claude-sonnet-4-6',
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
     disallowedTools: ['Write', 'Edit'],
-    maxTurns: 15,
   },
 }
 
@@ -190,7 +194,8 @@ function logTool(name: string, input: any): void {
 // Phase 0: negotiate — Sprint Contract 协商
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const REVIEW_SCHEMA = {
+// negotiate 阶段用：审计划，pass/needs-revision
+const PLAN_REVIEW_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
@@ -209,6 +214,35 @@ const REVIEW_SCHEMA = {
         },
       },
       overallComment: { type: 'string', description: 'Cross-cutting concerns, missing features, architectural issues' },
+    },
+    required: ['approved', 'reviews', 'overallComment'],
+  },
+}
+
+// review 阶段用：审实现，按协商好的维度评分
+const IMPL_REVIEW_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      approved: { type: 'boolean', description: 'true only if overall quality is acceptable' },
+      reviews: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            featureId: { type: 'string' },
+            status: { type: 'string', enum: ['pass', 'needs-revision'] },
+            scores: {
+              type: 'object',
+              description: 'Score each dimension from the sprint file reviewDimensions (1-5). Keys must match dimension names.',
+            },
+            comment: { type: 'string', description: 'Specific feedback with evidence from your verification' },
+          },
+          required: ['featureId', 'status', 'scores', 'comment'],
+        },
+      },
+      overallComment: { type: 'string', description: 'Cross-cutting concerns, coherence, architectural issues' },
     },
     required: ['approved', 'reviews', 'overallComment'],
   },
@@ -259,7 +293,7 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
       generatorResponse: generatorSaid,
     })
     const evalResult = await runAgent('Evaluator', evalPrompt, {
-      outputFormat: REVIEW_SCHEMA,
+      outputFormat: PLAN_REVIEW_SCHEMA,
       ...(evalSessionId ? { resume: evalSessionId } : {}),
     })
     evalSessionId = evalResult.sessionId
@@ -373,7 +407,8 @@ async function reviewAll(task: string, sprintNum: number): Promise<{ review: Rev
   const { structured, sessionId } = await runAgent('Evaluator', loadPrompt('evaluator-review', {
     task,
     principles,
-  }), { outputFormat: REVIEW_SCHEMA })
+    sprintFile: sprintPath(sprintNum),
+  }), { outputFormat: IMPL_REVIEW_SCHEMA })
 
   const review = parseReview(structured)
   if (!review) {
@@ -429,7 +464,11 @@ function parseReview(structured: any): ReviewResult | null {
 function printReview(review: ReviewResult): void {
   for (const r of review.reviews ?? []) {
     const icon = r.status === 'pass' ? green('✓') : red('✗')
-    console.log(`    ${icon} ${bold(r.featureId)} ${dim(r.comment.slice(0, 100))}`)
+    const scores = (r as any).scores
+    const scoreStr = scores
+      ? dim(' [' + Object.entries(scores).map(([k, v]) => `${k}:${v}`).join(' ') + ']')
+      : ''
+    console.log(`    ${icon} ${bold(r.featureId)}${scoreStr} ${dim(r.comment.slice(0, 80))}`)
   }
   if (review.overallComment) {
     console.log(`    ${dim('Overall:')} ${dim(review.overallComment.slice(0, 150))}`)

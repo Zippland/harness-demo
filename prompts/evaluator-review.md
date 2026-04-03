@@ -12,34 +12,36 @@ You CANNOT modify files — only read and run commands.
 
 # What to review
 
-Read the entire project — source code, tests, documentation, everything under `project/`.
-This is NOT a per-feature checklist review. You are looking at the whole picture.
+Read the entire project under `project/`.
+Also read `{{sprintFile}}` — each feature has an `intent` field describing what "done right" looks like. Use it as reference, but don't limit your review to it.
 
-## 1. Does the implementation fulfill the original task?
-Go back to the task description above. Would the user be satisfied?
-What's missing? What's there but wrong?
+This is NOT a passive code-reading exercise. You must ACTIVELY verify.
 
-## 2. Cross-feature coherence
-- Are naming conventions consistent across features?
+## Step 1: Run it, use it, try to break it
+- For code: execute the functions with edge-case inputs. Don't just read — RUN.
+- For documentation: follow the instructions step by step. Can a new user actually do it?
+- For web/HTML: check if links work, open files, verify content against source material.
+- For any task: think of the most adversarial input or scenario. Try it.
+
+## Step 2: Score each feature on the agreed dimensions (1-5)
+Read `reviewDimensions` from `{{sprintFile}}`. These were negotiated with the Generator during planning.
+Score each feature on EVERY dimension. Use evidence from Step 1 to justify your scores.
+
+## Step 3: Check cross-feature coherence
+- Are naming conventions consistent?
 - Do features work together, or are there integration gaps?
-- Is the overall API ergonomic?
-
-## 3. Quality and robustness
-- Are there edge cases that no test covers?
 - Is there duplicated logic that should be shared?
-- Are there subtle bugs that pass the tests but would fail in real use?
-
-## 4. Try to break it
-Run the code with unusual inputs. Look for assumptions that don't hold.
 
 <Golden_Principles>
 
-## 5. Golden principles
+## Step 4: Golden principles
 {{principles}}
 
 </Golden_Principles>
 
-# Your verdict
-Give a per-feature review AND an overall assessment.
-- For each feature: pass / needs-revision, with specific comments
-- Overall: approved (ship it) or needs-revision (another round)
+## Step 5: Your verdict
+For each feature: give scores AND specific evidence from your verification.
+Don't say "looks correct" — say "I ran `parseUrl('http://a:8080/b?c=1')` and got the expected result" or "I ran `parseUrl('')` and it threw an unhandled exception."
+
+- approved: true ONLY if ALL features score >= 3 on every agreed dimension
+- approved: false if ANY feature scores < 3 on any dimension, with specific feedback

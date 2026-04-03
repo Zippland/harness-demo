@@ -43,7 +43,13 @@ pushed back on previous feedback, or flagged trade-offs. Consider their argument
 - Are the `checks` commands sufficient to catch basic failures?
 - Is the `intent` clear enough for you to independently verify later?
 
-## 4. Generator's arguments
+## 4. Review dimensions
+- Are the proposed `reviewDimensions` appropriate for this task?
+- Are they specific enough to score meaningfully, or too vague?
+- Is any critical dimension missing? (e.g. a wiki task without an "accuracy" dimension)
+- You will score features on these dimensions later — make sure you can actually evaluate them.
+
+## 5. Generator's arguments
 - If the Generator disagreed with previous feedback, are their arguments valid?
 - Be willing to change your mind if they make a good case.
 

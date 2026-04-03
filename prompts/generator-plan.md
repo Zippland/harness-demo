@@ -32,6 +32,9 @@ Do NOT write actual implementations, final content, or finished artifacts.
 {
   "sprint": {{sprintNum}},
   "task": "<the original task, verbatim>",
+  "reviewDimensions": [
+    { "name": "<dimension name>", "description": "<what this dimension measures, specific to this task>" }
+  ],
   "features": [
     {
       "id": "<unique id, must match describe() block name for coding tasks>",
@@ -53,6 +56,17 @@ Do NOT write actual implementations, final content, or finished artifacts.
 {{principles}}
 
 </Golden_Principles>
+
+# How to write `reviewDimensions`
+
+Define 3–5 dimensions that the Evaluator will score on (1-5 scale) during the review phase.
+Dimensions should be SPECIFIC to this task, not generic. Examples:
+
+- Coding task: `{ "name": "robustness", "description": "Handles malformed inputs without crashing" }`
+- Wiki task: `{ "name": "accuracy", "description": "Content matches the source repository's actual code and architecture" }`
+- Documentation: `{ "name": "followability", "description": "A new developer can complete every step without external help" }`
+
+The Evaluator will review these dimensions during negotiation. You'll agree on them before implementation starts.
 
 # How to write `evaluation`
 
