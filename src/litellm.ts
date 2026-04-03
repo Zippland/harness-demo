@@ -31,6 +31,9 @@ function generateConfig(custom: NonNullable<HarnessConfig['customModel']>, model
       model: openai/${custom.backendModel}
       api_base: "${custom.backendUrl}"
       api_key: "${custom.backendApiKey || 'sk-placeholder'}"
+
+litellm_settings:
+  drop_params: true
 `
   const configPath = resolve(WORK_DIR, '.harness/litellm-config.yaml')
   writeFileSync(configPath, content)

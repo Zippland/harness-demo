@@ -40,3 +40,8 @@ export const config = loadConfig()
 // 设置环境变量（在 agent 子进程启动前）
 if (config.apiBaseUrl) process.env.ANTHROPIC_BASE_URL = config.apiBaseUrl
 if (config.apiKey) process.env.ANTHROPIC_API_KEY = config.apiKey
+
+// 使用自定义模型时，禁用 Claude Code 的实验性 Beta headers（第三方网关不认）
+if (config.customModel) {
+  process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+}

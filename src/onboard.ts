@@ -44,14 +44,18 @@ export async function onboard(): Promise<void> {
     }
 
     model = existing.model || config.model
-    apiBaseUrl = `http://127.0.0.1:${litellmPort}/anthropic`
+    apiBaseUrl = `http://127.0.0.1:${litellmPort}`
     apiKey = 'sk-litellm'
     customModel = { backendUrl, backendModel, litellmPort, backendApiKey }
     console.log(green(`\n  ✓ LiteLLM 将自动启动并将 ${model} 请求转发到 ${backendUrl} (${backendModel})\n`))
   } else {
     model = (await ask(`  Model [${existing.model || config.model}]: `)).trim() || existing.model || config.model
-    apiBaseUrl = (await ask(`  API Base URL (留空用官方) [${existing.apiBaseUrl || ''}]: `)).trim() || existing.apiBaseUrl || ''
-    apiKey = (await ask(`  API Key (留空用环境变量) [${existing.apiKey ? '****' : ''}]: `)).trim() || existing.apiKey || ''
+
+    const rawUrl = await ask(`  API Base URL (留空用官方, 输入 clear 清除) [${existing.apiBaseUrl || ''}]: `)
+    apiBaseUrl = rawUrl.trim() === 'clear' ? '' : (rawUrl.trim() || existing.apiBaseUrl || '')
+
+    const rawKey = await ask(`  API Key (留空用环境变量, 输入 clear 清除) [${existing.apiKey ? '****' : ''}]: `)
+    apiKey = rawKey.trim() === 'clear' ? '' : (rawKey.trim() || existing.apiKey || '')
   }
 
   const concurrency = parseInt((await ask(`\n  Review 并发数 [${existing.concurrency || config.concurrency}]: `)).trim()) || existing.concurrency || config.concurrency
