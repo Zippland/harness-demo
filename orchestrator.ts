@@ -125,12 +125,12 @@ function shortPath(p: string): string {
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Generator: {
     model: 'claude-sonnet-4-6',
-    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead'],
   },
   Evaluator: {
     model: 'claude-sonnet-4-6',
-    allowedTools: ['Read', 'Glob', 'Grep', 'Bash'],
-    disallowedTools: ['Write', 'Edit'],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead'],
+    disallowedTools: ['Write', 'Edit', 'TodoWrite'],
   },
 }
 
@@ -186,12 +186,23 @@ async function runAgent(
     }
   } catch (e: any) {
     const errMsg = String(e?.message ?? e)
+
+    // token 超限：resume 让 agent 继续
     if (errMsg.includes('output token') && sessionId) {
-      // token 超限：resume 让 agent 继续完成
       console.log(`    ${yellow('!')} ${dim('Output token limit hit, resuming...')}`)
       return runAgent(role, 'Continue where you left off. Complete your remaining work.', { ...opts, resume: sessionId })
     }
-    throw e
+
+    // API 限流 / 网络错误 / 进程崩溃：等一会儿重试
+    if (errMsg.includes('rate limit') || errMsg.includes('overloaded') || errMsg.includes('ECONNRESET') || errMsg.includes('ETIMEDOUT')) {
+      console.log(`    ${yellow('!')} ${dim(`Transient error: ${errMsg.slice(0, 80)}. Retrying in 10s...`)}`)
+      await new Promise((r) => setTimeout(r, 10_000))
+      return runAgent(role, prompt, opts)
+    }
+
+    // 其他错误：记录但不崩溃，返回空结果让上层处理
+    console.log(`    ${red('!')} ${dim(`Agent error: ${errMsg.slice(0, 100)}`)}`)
+    return { sessionId, result: `[Agent error: ${errMsg}]`, structured: undefined }
   }
 
   const joined = textBlocks.join('\n\n') || result
@@ -340,8 +351,8 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
 
     const review = parseReview(structured)
     if (!review) {
-      console.log(dim('    Could not parse review, proceeding'))
-      break
+      console.log(dim('    Could not parse review, retrying...'))
+      continue  // 重跑这一轮 Evaluator，不跳过协商
     }
 
     printReview(review)
@@ -563,10 +574,15 @@ function progressBar(done: number, total: number, width = 20): string {
 function updateSprintState(sprintNum: number, phase: Sprint['phase'], previousReview?: string): void {
   const file = sprintPath(sprintNum)
   if (!existsSync(file)) return
-  const sprint = loadSprint(sprintNum)
-  sprint.phase = phase
-  if (previousReview !== undefined) sprint.previousReview = previousReview
-  writeFileSync(file, JSON.stringify(sprint, null, 2))
+  try {
+    const sprint = loadSprint(sprintNum)
+    sprint.phase = phase
+    if (previousReview !== undefined) sprint.previousReview = previousReview
+    writeFileSync(file, JSON.stringify(sprint, null, 2))
+  } catch {
+    // sprint 文件损坏，跳过状态更新（不崩溃）
+    console.log(dim('    Warning: could not update sprint state'))
+  }
 }
 
 async function main(): Promise<void> {
@@ -635,7 +651,13 @@ async function main(): Promise<void> {
     // Phase 2: 全局审查
     const { review, evalSessionId } = await reviewAll(resolvedTask, sprintNum)
 
-    if (!review || review.approved) {
+    if (!review) {
+      // review 解析失败 → 重跑 review（不当 approved，也不当 rejected）
+      console.log(yellow('    Review parse failed, re-running review...'))
+      continue
+    }
+
+    if (review.approved) {
       updateSprintState(sprintNum, 'done')
       let totalFeatures = 0
       for (let s = 1; s <= sprintNum; s++) {
