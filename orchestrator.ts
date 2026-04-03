@@ -452,41 +452,37 @@ async function reviewAll(task: string, sprintNum: number): Promise<{ review: Rev
   const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
 
-  // 构建 N+M 个并行 reviewer 任务
-  const reviewTasks: Promise<SingleReview>[] = []
+  // 构建 N+M 个 reviewer 任务（lazy，不立即执行）
+  const reviewFns: (() => Promise<SingleReview>)[] = []
 
   // M 个 feature reviewer
   for (const feature of sprint.features) {
-    reviewTasks.push(
-      (async () => {
-        console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
-        const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
-          task,
-          scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nIntent: ${(parseEvaluation(feature.evaluation)).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
-        }), { outputFormat: SINGLE_REVIEW_SCHEMA })
-        const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
-        return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }
-      })()
-    )
+    reviewFns.push(() => (async () => {
+      console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
+      const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
+        task,
+        scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nIntent: ${(parseEvaluation(feature.evaluation)).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
+      }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+      const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+      return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }
+    })())
   }
 
   // N 个 dimension reviewer
   for (const dimen of (sprint.reviewDimensions ?? [])) {
-    reviewTasks.push(
-      (async () => {
-        console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
-        const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
-          task,
-          scope: `**Dimension: ${dimen.name}**\n${dimen.description}\n\nReview the ENTIRE implementation against this quality dimension. Check all features, all files.\n\nGolden Principles:\n${principles}`,
-        }), { outputFormat: SINGLE_REVIEW_SCHEMA })
-        const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
-        return { id: dimen.name, type: 'dimension' as const, status: r.status, score: r.score, comment: r.comment }
-      })()
-    )
+    reviewFns.push(() => (async () => {
+      console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
+      const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
+        task,
+        scope: `**Dimension: ${dimen.name}**\n${dimen.description}\n\nReview the ENTIRE implementation against this quality dimension. Check all features, all files.\n\nGolden Principles:\n${principles}`,
+      }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+      const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+      return { id: dimen.name, type: 'dimension' as const, status: r.status, score: r.score, comment: r.comment }
+    })())
   }
 
-  // 并行执行所有 reviewer
-  const results = await Promise.all(reviewTasks)
+  // 4 worker 并发池
+  const results = await runPool(reviewFns, 4)
 
   // 打印结果
   console.log()
@@ -603,6 +599,22 @@ function formatReviewFeedback(review: ReviewResult): string {
   ].join('\n')
 }
 
+
+/** 并发池：最多 concurrency 个任务同时执行 */
+async function runPool<T>(fns: (() => Promise<T>)[], concurrency: number): Promise<T[]> {
+  const results: T[] = []
+  let idx = 0
+
+  async function worker() {
+    while (idx < fns.length) {
+      const i = idx++
+      results[i] = await fns[i]()
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, fns.length) }, () => worker()))
+  return results
+}
 
 function progressBar(done: number, total: number, width = 20): string {
   const filled = Math.round((done / total) * width)
