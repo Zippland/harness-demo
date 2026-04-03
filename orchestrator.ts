@@ -60,7 +60,7 @@ interface Sprint {
 }
 
 interface ReviewResult {
-  approved: boolean
+  approved: boolean  // orchestrator 计算，不来自 Evaluator
   reviews: { featureId: string; status: string; comment: string }[]
   overallComment: string
 }
@@ -194,13 +194,12 @@ function logTool(name: string, input: any): void {
 // Phase 0: negotiate — Sprint Contract 协商
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// negotiate 阶段用：审计划，pass/needs-revision
+// negotiate 阶段用：审计划
 const PLAN_REVIEW_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
     properties: {
-      approved: { type: 'boolean', description: 'true only if ALL features pass review' },
       reviews: {
         type: 'array',
         items: {
@@ -215,7 +214,7 @@ const PLAN_REVIEW_SCHEMA = {
       },
       overallComment: { type: 'string', description: 'Cross-cutting concerns, missing features, architectural issues' },
     },
-    required: ['approved', 'reviews', 'overallComment'],
+    required: ['reviews', 'overallComment'],
   },
 }
 
@@ -225,7 +224,6 @@ const IMPL_REVIEW_SCHEMA = {
   schema: {
     type: 'object',
     properties: {
-      approved: { type: 'boolean', description: 'true only if overall quality is acceptable' },
       reviews: {
         type: 'array',
         items: {
@@ -244,7 +242,7 @@ const IMPL_REVIEW_SCHEMA = {
       },
       overallComment: { type: 'string', description: 'Cross-cutting concerns, coherence, architectural issues' },
     },
-    required: ['approved', 'reviews', 'overallComment'],
+    required: ['reviews', 'overallComment'],
   },
 }
 
@@ -455,8 +453,15 @@ function runChecks(checks: string[]): { pass: boolean; output: string } {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function parseReview(structured: any): ReviewResult | null {
-  if (structured && typeof structured === 'object' && 'approved' in structured) {
-    return structured as ReviewResult
+  if (structured && typeof structured === 'object' && Array.isArray(structured.reviews)) {
+    const reviews = structured.reviews as ReviewResult['reviews']
+    // approved 由 orchestrator 机械判定：全部 pass 才通过
+    const approved = reviews.length > 0 && reviews.every((r) => r.status === 'pass')
+    return {
+      approved,
+      reviews,
+      overallComment: structured.overallComment ?? '',
+    }
   }
   return null
 }

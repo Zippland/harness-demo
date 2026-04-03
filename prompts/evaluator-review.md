@@ -43,5 +43,6 @@ Score each feature on EVERY dimension. Use evidence from Step 1 to justify your 
 For each feature: give scores AND specific evidence from your verification.
 Don't say "looks correct" — say "I ran `parseUrl('http://a:8080/b?c=1')` and got the expected result" or "I ran `parseUrl('')` and it threw an unhandled exception."
 
-- approved: true ONLY if ALL features score >= 3 on every agreed dimension
-- approved: false if ANY feature scores < 3 on any dimension, with specific feedback
+For each feature, give `pass` or `needs-revision` with scores and evidence.
+The orchestrator determines overall approval: ALL features must pass.
+A feature with ANY dimension score < 3 should be marked `needs-revision`.

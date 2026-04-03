@@ -61,6 +61,6 @@ pushed back on previous feedback, or flagged trade-offs. Consider their argument
 </Golden_Principles>
 
 # Your verdict
-- approved: true — the plan is good enough to build against (even if imperfect)
-- approved: false — specific feedback on what still needs to change
-- In your comments: acknowledge where the Generator convinced you, if applicable
+For each feature, give `pass` or `needs-revision` with a specific comment.
+The orchestrator determines overall approval: ALL features must pass for the plan to proceed.
+In your comments: acknowledge where the Generator convinced you, if applicable.
