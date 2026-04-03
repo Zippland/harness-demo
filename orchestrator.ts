@@ -149,7 +149,6 @@ async function runAgent(
     options: {
       cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
-      maxOutputTokens: 128000,
       ...AGENT_CONFIG[role],
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(opts.outputFormat ? { outputFormat: opts.outputFormat } : {}),
@@ -159,34 +158,42 @@ async function runAgent(
   let sessionId = ''
   let result = ''
   let structured: any
-  const textBlocks: string[] = []   // 收集所有文字，不只是最终 result
+  const textBlocks: string[] = []
 
-  for await (const msg of q) {
-    if (msg.type === 'assistant') {
-      for (const block of ((msg as any).message?.content ?? [])) {
-        if (block.type === 'text' && block.text?.trim()) {
-          const text = block.text.trim()
-          textBlocks.push(text)
-          // 保留格式，每行加缩进前缀
-          for (const line of text.split('\n')) {
-            console.log(`    ${cyan('>')} ${line}`)
+  try {
+    for await (const msg of q) {
+      if (msg.type === 'assistant') {
+        for (const block of ((msg as any).message?.content ?? [])) {
+          if (block.type === 'text' && block.text?.trim()) {
+            const text = block.text.trim()
+            textBlocks.push(text)
+            for (const line of text.split('\n')) {
+              console.log(`    ${cyan('>')} ${line}`)
+            }
+          }
+          if (block.type === 'tool_use') {
+            logTool(block.name, block.input)
           }
         }
-        if (block.type === 'tool_use') {
-          logTool(block.name, block.input)
-        }
+      }
+      if ('session_id' in msg && (msg as any).session_id) {
+        sessionId = (msg as any).session_id
+      }
+      if (msg.type === 'result' && (msg as any).subtype === 'success') {
+        result = (msg as any).result ?? ''
+        structured = (msg as any).structured_output
       }
     }
-    if ('session_id' in msg && (msg as any).session_id) {
-      sessionId = (msg as any).session_id
+  } catch (e: any) {
+    const errMsg = String(e?.message ?? e)
+    if (errMsg.includes('output token') && sessionId) {
+      // token 超限：resume 让 agent 继续完成
+      console.log(`    ${yellow('!')} ${dim('Output token limit hit, resuming...')}`)
+      return runAgent(role, 'Continue where you left off. Complete your remaining work.', { ...opts, resume: sessionId })
     }
-    if (msg.type === 'result' && (msg as any).subtype === 'success') {
-      result = (msg as any).result ?? ''
-      structured = (msg as any).structured_output
-    }
+    throw e
   }
 
-  // 用完整的文字记录，截断防止撑爆下一个 agent 的上下文
   const joined = textBlocks.join('\n\n') || result
   const fullResponse = joined.length > 5000 ? joined.slice(-5000) : joined
 
@@ -564,6 +571,9 @@ function updateSprintState(sprintNum: number, phase: Sprint['phase'], previousRe
 
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(' ').trim()
+
+  // 提高输出 token 上限
+  process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '128000'
 
   // 在工作目录创建 .harness/progress
   mkdirSync(PROGRESS_DIR, { recursive: true })
