@@ -13,16 +13,17 @@
 
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { execSync } from 'child_process'
-import { readFileSync, writeFileSync, existsSync, readdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'fs'
 import { resolve, dirname, relative } from 'path'
 import { fileURLToPath } from 'url'
 
 // ─── Paths & Config ───
 
-const ROOT = dirname(fileURLToPath(import.meta.url))
-const PROGRESS_DIR = resolve(ROOT, 'progress')
-const PRINCIPLES_FILE = resolve(ROOT, 'control/golden-principles.md')
-const PROMPTS_DIR = resolve(ROOT, 'prompts')
+const TOOL_DIR = dirname(fileURLToPath(import.meta.url))  // harness 工具自身的文件
+const WORK_DIR = process.cwd()                             // 用户的工作目录
+const PROGRESS_DIR = resolve(WORK_DIR, '.harness/progress')
+const PRINCIPLES_FILE = resolve(TOOL_DIR, 'control/golden-principles.md')
+const PROMPTS_DIR = resolve(TOOL_DIR, 'prompts')
 const MAX_L1_RETRIES = 5
 const MAX_NEGOTIATE_ROUNDS = 30
 const MAX_SPRINTS = 10
@@ -106,7 +107,7 @@ const ROLE_STYLE: Record<Role, (s: string) => string> = {
 
 function shortPath(p: string): string {
   if (!p) return ''
-  return relative(ROOT, p.startsWith('/') ? p : resolve(ROOT, p)) || p
+  return relative(WORK_DIR, p.startsWith('/') ? p : resolve(WORK_DIR, p)) || p
 }
 
 // ─── Agent 工具权限 ───
@@ -136,7 +137,7 @@ async function runAgent(
   const q = query({
     prompt,
     options: {
-      cwd: ROOT,
+      cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
       ...AGENT_CONFIG[role],
       ...(opts.resume ? { resume: opts.resume } : {}),
@@ -155,7 +156,10 @@ async function runAgent(
         if (block.type === 'text' && block.text?.trim()) {
           const text = block.text.trim()
           textBlocks.push(text)
-          console.log(`    ${cyan('>')} ${text.replace(/\n/g, ' ').slice(0, 150)}`)
+          // 保留格式，每行加缩进前缀
+          for (const line of text.split('\n')) {
+            console.log(`    ${cyan('>')} ${line}`)
+          }
         }
         if (block.type === 'tool_use') {
           logTool(block.name, block.input)
@@ -530,10 +534,14 @@ function updateSprintState(sprintNum: number, phase: Sprint['phase'], previousRe
 
 async function main(): Promise<void> {
   const task = process.argv.slice(2).join(' ').trim()
+
+  // 在工作目录创建 .harness/progress
+  mkdirSync(PROGRESS_DIR, { recursive: true })
+
   const existingSprint = currentSprintNumber()
 
   if (!task && existingSprint === 0) {
-    console.error('  Usage: npm start "<task description>"')
+    console.error('  Usage: harness "<task description>"')
     process.exit(1)
   }
 
