@@ -251,35 +251,8 @@ const PLAN_REVIEW_SCHEMA = {
   },
 }
 
-// review 阶段用：审实现，按协商好的维度评分
-const IMPL_REVIEW_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      reviews: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            featureId: { type: 'string' },
-            status: { type: 'string', enum: ['pass', 'needs-revision'] },
-            scores: {
-              type: 'object',
-              description: 'Score each dimension from the sprint file reviewDimensions (1-5). Keys must match dimension names.',
-            },
-            comment: { type: 'string', description: 'Specific feedback with evidence from your verification' },
-          },
-          required: ['featureId', 'status', 'scores', 'comment'],
-        },
-      },
-      overallComment: { type: 'string', description: 'Cross-cutting concerns, coherence, architectural issues' },
-    },
-    required: ['reviews', 'overallComment'],
-  },
-}
 
-async function negotiate(task: string, sprintNum: number, previousReview?: string, evalSessionFromReview?: string): Promise<void> {
+async function negotiate(task: string, sprintNum: number, previousReview?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const sprintFile = sprintPath(sprintNum)
@@ -332,7 +305,7 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
   // Generator ↔ Evaluator 对话协商
   // 双方各自顺承（resume），保持对话上下文
   let generatorSaid = gen.result
-  let evalSessionId = evalSessionFromReview ?? ''
+  let evalSessionId = ''
 
   for (let round = 1; round <= MAX_NEGOTIATE_ROUNDS; round++) {
     // Evaluator 审计划 + 读 Generator 的文字回复（同一 session 顺承）
@@ -447,27 +420,115 @@ async function implement(sprintNum: number): Promise<void> {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Phase 2: reviewAll — Evaluator 全局审查
+// Phase 2: reviewAll — N+M 并行 reviewer
+//
+// 每个 dimension 和每个 feature 各起一个 reviewer，
+// 并行执行，结果汇总成一份完整 review。
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-async function reviewAll(task: string, sprintNum: number): Promise<{ review: ReviewResult | null; evalSessionId: string }> {
+const SINGLE_REVIEW_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['pass', 'needs-revision'] },
+      score: { type: 'number', description: '1-5 score' },
+      comment: { type: 'string', description: 'Specific feedback with evidence' },
+    },
+    required: ['status', 'score', 'comment'],
+  },
+}
+
+interface SingleReview {
+  id: string
+  type: 'feature' | 'dimension'
+  status: string
+  score: number
+  comment: string
+}
+
+async function reviewAll(task: string, sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
+  const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
 
-  const { structured, sessionId } = await runAgent('Evaluator', loadPrompt('evaluator-review', {
-    task,
-    principles,
-    sprintFile: sprintPath(sprintNum),
-  }), { outputFormat: IMPL_REVIEW_SCHEMA })
+  // 构建 N+M 个并行 reviewer 任务
+  const reviewTasks: Promise<SingleReview>[] = []
 
-  const review = parseReview(structured)
-  if (!review) {
-    console.log(dim('    Could not parse review'))
-    return { review: null, evalSessionId: sessionId }
+  // M 个 feature reviewer
+  for (const feature of sprint.features) {
+    reviewTasks.push(
+      (async () => {
+        console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
+        const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
+          task,
+          scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nIntent: ${(parseEvaluation(feature.evaluation)).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
+        }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+        const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+        return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }
+      })()
+    )
   }
 
+  // N 个 dimension reviewer
+  for (const dimen of (sprint.reviewDimensions ?? [])) {
+    reviewTasks.push(
+      (async () => {
+        console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
+        const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
+          task,
+          scope: `**Dimension: ${dimen.name}**\n${dimen.description}\n\nReview the ENTIRE implementation against this quality dimension. Check all features, all files.\n\nGolden Principles:\n${principles}`,
+        }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+        const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+        return { id: dimen.name, type: 'dimension' as const, status: r.status, score: r.score, comment: r.comment }
+      })()
+    )
+  }
+
+  // 并行执行所有 reviewer
+  const results = await Promise.all(reviewTasks)
+
+  // 打印结果
+  console.log()
+  for (const r of results) {
+    const icon = r.status === 'pass' ? green('✓') : red('✗')
+    const tag = r.type === 'feature' ? cyan('feature') : magenta('dimension')
+    console.log(`    ${icon} ${tag}/${bold(r.id)} ${dim(`[${r.score}/5]`)} ${dim(r.comment.slice(0, 80))}`)
+  }
+
+  // 汇总成 ReviewResult
+  const featureReviews = results
+    .filter((r) => r.type === 'feature')
+    .map((r) => ({ featureId: r.id, status: r.status, comment: r.comment }))
+  const dimensionReviews = results.filter((r) => r.type === 'dimension')
+
+  const approved = results.every((r) => r.status === 'pass')
+
+  const overallComment = dimensionReviews
+    .map((r) => `[${r.id}: ${r.score}/5] ${r.comment}`)
+    .join('\n')
+
+  const review: ReviewResult = { approved, reviews: featureReviews, overallComment }
+
+  // 汇总成一段不分割的 prompt，供 negotiate 使用
+  const collectedReview = [
+    '# Review Results',
+    '',
+    '## Feature Reviews',
+    ...results.filter((r) => r.type === 'feature').map((r) =>
+      `- [${r.status === 'pass' ? 'PASS' : 'NEEDS-REVISION'}] **${r.id}** (${r.score}/5): ${r.comment}`
+    ),
+    '',
+    '## Dimension Reviews',
+    ...results.filter((r) => r.type === 'dimension').map((r) =>
+      `- [${r.status === 'pass' ? 'PASS' : 'NEEDS-REVISION'}] **${r.id}** (${r.score}/5): ${r.comment}`
+    ),
+    '',
+    `## Verdict: ${approved ? 'ALL PASS' : 'NEEDS REVISION'}`,
+  ].join('\n')
+
   printReview(review)
-  return { review, evalSessionId: sessionId }
+  return { review, collectedReview }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -542,24 +603,6 @@ function formatReviewFeedback(review: ReviewResult): string {
   ].join('\n')
 }
 
-function formatReviewForDiscussion(review: ReviewResult): string {
-  const lines = (review.reviews ?? []).map((r) => {
-    const tag = r.status === 'pass' ? '✓ PASS' : '✗ DISPUTE'
-    return `- [${tag}] **${r.featureId}**: ${r.comment}`
-  })
-  return [
-    '# Evaluator Review Results',
-    '',
-    'The Evaluator has reviewed the implementation. Items marked DISPUTE are open for discussion.',
-    'You may agree (and plan a fix in the next sprint) or disagree (and argue why it\'s correct).',
-    '',
-    'Create a new sprint file with ONLY the features that need rework or are newly added.',
-    'Do NOT include features that are already passing and not under dispute.',
-    '',
-    ...lines,
-    review.overallComment ? `\n**Overall**: ${review.overallComment}` : '',
-  ].join('\n')
-}
 
 function progressBar(done: number, total: number, width = 20): string {
   const filled = Math.round((done / total) * width)
@@ -624,7 +667,6 @@ async function main(): Promise<void> {
   }
 
   const resolvedTask = task || (existingSprint > 0 ? loadSprint(existingSprint).task : '')
-  let evalSessionFromLastReview: string | undefined
 
   for (let sprintNum = startSprint; sprintNum <= startSprint + MAX_SPRINTS; sprintNum++) {
     console.log(bold(`\n  ━━━━━━━━━━━━━━━━━━━━━━━━━`))
@@ -636,9 +678,9 @@ async function main(): Promise<void> {
       ? loadSprint(sprintNum).phase
       : null
 
-    // Phase 0: 协商（传入上一轮 review 的 Evaluator session，保持对话连续）
+    // Phase 0: 协商
     if (!resumePhase || resumePhase === 'negotiate') {
-      await negotiate(resolvedTask, sprintNum, previousReview, evalSessionFromLastReview)
+      await negotiate(resolvedTask, sprintNum, previousReview)
       updateSprintState(sprintNum, 'implement')
     }
 
@@ -648,11 +690,10 @@ async function main(): Promise<void> {
       updateSprintState(sprintNum, 'review')
     }
 
-    // Phase 2: 全局审查
-    const { review, evalSessionId } = await reviewAll(resolvedTask, sprintNum)
+    // Phase 2: N+M 并行 review
+    const { review, collectedReview } = await reviewAll(resolvedTask, sprintNum)
 
     if (!review) {
-      // review 解析失败 → 重跑 review（不当 approved，也不当 rejected）
       console.log(yellow('    Review parse failed, re-running review...'))
       continue
     }
@@ -667,9 +708,8 @@ async function main(): Promise<void> {
       break
     }
 
-    // 有分歧 → Evaluator session 传给下一轮 negotiate
-    evalSessionFromLastReview = evalSessionId
-    previousReview = formatReviewForDiscussion(review)
+    // 有分歧 → collectedReview 整段进入下一轮 negotiate
+    previousReview = collectedReview
     updateSprintState(sprintNum, 'done', previousReview)
 
     const disputeCount = (review.reviews ?? []).filter((r) => r.status === 'needs-revision').length
