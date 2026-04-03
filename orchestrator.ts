@@ -466,7 +466,7 @@ function runChecks(checks: string[]): { pass: boolean; output: string } {
   for (const cmd of checks) {
     console.log(`    ${dim('$')} ${dim(cmd.slice(0, 100))}`)
     try {
-      execSync(cmd, { cwd: ROOT, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
+      execSync(cmd, { cwd: WORK_DIR, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
       results.push(`✓ ${cmd}`)
     } catch (e: any) {
       const output = ((e.stdout ?? '') + (e.stderr ?? '')).trim()
