@@ -22,7 +22,9 @@ import { fileURLToPath } from 'url'
 const TOOL_DIR = dirname(fileURLToPath(import.meta.url))  // harness 工具自身的文件
 const WORK_DIR = process.cwd()                             // 用户的工作目录
 const PROGRESS_DIR = resolve(WORK_DIR, '.harness/progress')
-const PRINCIPLES_FILE = resolve(TOOL_DIR, 'control/golden-principles.md')
+const LOCAL_PRINCIPLES = resolve(WORK_DIR, '.harness/golden-principles.md')
+const DEFAULT_PRINCIPLES = resolve(TOOL_DIR, 'control/golden-principles.md')
+const PRINCIPLES_FILE = existsSync(LOCAL_PRINCIPLES) ? LOCAL_PRINCIPLES : DEFAULT_PRINCIPLES
 const PROMPTS_DIR = resolve(TOOL_DIR, 'prompts')
 const MAX_L1_RETRIES = 5
 const MAX_NEGOTIATE_ROUNDS = 30
