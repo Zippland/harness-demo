@@ -36,6 +36,8 @@ harness
 
 ```
 .harness/
+├── config.json         # 可选：项目级配置
+├── golden-principles.md # 可选：项目级质量标准
 ├── progress/
 │   ├── sprint-1.json   # 第一轮计划 + 状态
 │   ├── sprint-2.json   # review 后的修订计划
@@ -61,6 +63,53 @@ EOF
 ```
 
 harness 会优先读取项目级别的文件。
+
+## 配置
+
+运行 `harness onboard` 进行交互式配置：
+
+```bash
+harness onboard
+```
+
+也可以手动创建配置文件 `.harness/config.json`（项目级）或 `~/.harness/config.json`（全局）：
+
+```json
+{
+  "model": "claude-sonnet-4-6",
+  "apiBaseUrl": "http://localhost:4000/anthropic",
+  "apiKey": "sk-xxx",
+  "concurrency": 4,
+  "maxSprints": 10,
+  "maxNegotiateRounds": 30,
+  "maxL1Retries": 5
+}
+```
+
+| 字段 | 说明 | 默认值 |
+|------|------|--------|
+| `model` | 模型名称 | `claude-sonnet-4-6` |
+| `apiBaseUrl` | API 端点（留空用 Anthropic 官方） | `""` |
+| `apiKey` | API Key（留空用环境变量） | `""` |
+| `concurrency` | review 阶段并行 reviewer 数 | `4` |
+| `maxSprints` | 最大 sprint 轮数 | `10` |
+| `maxNegotiateRounds` | 每轮协商最大讨论次数 | `30` |
+| `maxL1Retries` | L1 检查失败最大重试次数 | `5` |
+
+### 使用自定义模型（通过 LiteLLM）
+
+```bash
+# 1. 启动 LiteLLM 代理
+pip install litellm[proxy]
+litellm --config config.yaml --port 4000
+
+# 2. 配置 harness 指向代理
+harness onboard
+# → API Base URL: http://localhost:4000/anthropic
+
+# 3. 正常使用
+harness "你的任务"
+```
 
 ## 架构
 

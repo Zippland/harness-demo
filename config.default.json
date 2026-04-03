@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-6",
+  "apiBaseUrl": "",
+  "apiKey": "",
+  "concurrency": 4,
+  "maxSprints": 10,
+  "maxNegotiateRounds": 30,
+  "maxL1Retries": 5
+}
