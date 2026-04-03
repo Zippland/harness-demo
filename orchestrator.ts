@@ -78,6 +78,14 @@ function loadSprint(n: number): Sprint {
   return JSON.parse(readFileSync(sprintPath(n), 'utf-8'))
 }
 
+function tryLoadSprint(n: number): { sprint: Sprint | null; error: string } {
+  try {
+    return { sprint: loadSprint(n), error: '' }
+  } catch (e) {
+    return { sprint: null, error: (e as Error).message }
+  }
+}
+
 function currentSprintNumber(): number {
   if (!existsSync(PROGRESS_DIR)) return 0
   const files = readdirSync(PROGRESS_DIR).filter((f) => /^sprint-\d+\.json$/.test(f))
@@ -271,13 +279,32 @@ async function negotiate(task: string, sprintNum: number, previousReview?: strin
 
   let gen = await runAgent('Generator', genPrompt)
 
+  // 验证 sprint 文件存在且是合法 JSON，失败则让 Generator 修
+  for (let fix = 0; fix < 3; fix++) {
+    if (!existsSync(sprintFile)) {
+      console.log(red(`    Sprint file not created, asking Generator to retry`))
+      gen = await runAgent('Generator', `You did not create the sprint file at ${sprintFile}. Please create it now.`, { resume: gen.sessionId })
+      continue
+    }
+    const { sprint, error } = tryLoadSprint(sprintNum)
+    if (sprint) break
+    console.log(red(`    Sprint file has invalid JSON: ${error}`))
+    console.log(dim('    Asking Generator to fix...'))
+    gen = await runAgent('Generator', `The sprint file at ${sprintFile} has invalid JSON:\n\n${error}\n\nPlease read the file, fix the JSON syntax error, and write it back. Common issue: unescaped quotes inside string values.`, { resume: gen.sessionId })
+  }
+
   if (!existsSync(sprintFile)) {
-    console.error(red(`\n  Negotiation failed: ${sprintFile} not created`))
+    console.error(red(`\n  Negotiation failed: ${sprintFile} not created after retries`))
     process.exit(1)
   }
 
-  // 确保 sprint 文件有 phase 字段（Generator 可能没写）
-  const initialSprint = loadSprint(sprintNum)
+  const { sprint: initialSprint, error } = tryLoadSprint(sprintNum)
+  if (!initialSprint) {
+    console.error(red(`\n  Negotiation failed: ${sprintFile} still invalid: ${error}`))
+    process.exit(1)
+  }
+
+  // 确保 sprint 文件有 phase 字段
   if (!initialSprint.phase) {
     initialSprint.phase = 'negotiate'
     writeFileSync(sprintFile, JSON.stringify(initialSprint, null, 2))
