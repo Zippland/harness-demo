@@ -558,6 +558,42 @@ function runChecks(checks: string[]): { pass: boolean; output: string } {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Phase 3: Holistic Review — 全量回归 + 最终审计
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const HOLISTIC_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['pass', 'needs-revision'] },
+      comment: { type: 'string', description: 'Specific findings with evidence. If fail: what needs a new sprint.' },
+    },
+    required: ['status', 'comment'],
+  },
+}
+
+async function holisticReview(task: string): Promise<{ pass: boolean; feedback: string }> {
+  console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
+
+  const { structured } = await runAgent('Evaluator', loadPrompt('reviewer-holistic', {
+    task,
+  }), { outputFormat: HOLISTIC_SCHEMA })
+
+  const result = structured as any
+  if (!result || typeof result !== 'object') {
+    console.log(dim('    Could not parse holistic review'))
+    return { pass: false, feedback: 'Holistic review failed to produce output' }
+  }
+
+  const pass = result.status === 'pass'
+  const icon = pass ? green('✓') : red('✗')
+  console.log(`\n    ${icon} ${bold('Holistic verdict')}: ${result.comment?.slice(0, 150)}`)
+
+  return { pass, feedback: result.comment ?? '' }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Review helpers
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -712,12 +748,23 @@ async function main(): Promise<void> {
 
     if (review.approved) {
       updateSprintState(sprintNum, 'done')
-      let totalFeatures = 0
-      for (let s = 1; s <= sprintNum; s++) {
-        if (existsSync(sprintPath(s))) totalFeatures += loadSprint(s).features.length
+
+      // Phase 3: Holistic Review — 全量回归 + 最终审计
+      const holistic = await holisticReview(resolvedTask)
+
+      if (holistic.pass) {
+        let totalFeatures = 0
+        for (let s = 1; s <= sprintNum; s++) {
+          if (existsSync(sprintPath(s))) totalFeatures += loadSprint(s).features.length
+        }
+        console.log(green(bold(`\n  ✓ ALL APPROVED + HOLISTIC PASS — ${totalFeatures} features across ${sprintNum} sprint(s)\n`)))
+        break
       }
-      console.log(green(bold(`\n  ✓ ALL APPROVED after ${sprintNum} sprint(s) — ${totalFeatures} features total\n`)))
-      break
+
+      // Holistic review 失败 → 新 sprint 修复
+      previousReview = `# Holistic Review Failed\n\n${holistic.feedback}`
+      console.log(yellow(`\n  Holistic review found issues → Sprint ${sprintNum + 1}\n`))
+      continue
     }
 
     // 有分歧 → collectedReview 整段进入下一轮 negotiate
