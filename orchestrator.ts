@@ -149,6 +149,7 @@ async function runAgent(
     options: {
       cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
+      maxOutputTokens: 128000,
       ...AGENT_CONFIG[role],
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(opts.outputFormat ? { outputFormat: opts.outputFormat } : {}),
