@@ -9,25 +9,16 @@ Your plan will be reviewed by an independent Evaluator — think of this as a ne
 </TASK>
 
 # CRITICAL: This is the PLANNING phase, NOT the implementation phase.
-Do NOT implement any features. Do NOT write final content.
-Your ONLY job is to produce a plan (sprint file) and minimal scaffolding.
-Implementation happens later in a separate phase.
+Your ONLY output is ONE file: the sprint file at {{progressFile}}.
+Do NOT create, edit, or write ANY other files. No scaffolding, no stubs, no tests, no code, no content.
+Read whatever you need to understand the task, but ONLY write the sprint file.
 
 # What you must produce
 
-## 1. Research and decompose the task
-Read whatever you need to understand the task, then break it into 5–10 independently deliverable features.
-Think about: what order makes sense? What builds on what?
+## 1. Research the task
+Read whatever files you need to understand the task. Explore the codebase, read docs, understand the domain.
 
-## 2. Write MINIMAL project scaffolding
-Set up the bare minimum structure under `project/` — just enough so that checks can run:
-- For coding tasks: write vitest tests and function stubs (NOT implementations)
-- For documentation/wiki tasks: create empty placeholder files or directory structure (NOT the actual content)
-- For other tasks: create whatever minimal structure is needed
-
-Do NOT write actual implementations, final content, or finished artifacts.
-
-## 3. Write {{progressFile}}
+## 2. Write the sprint file — {{progressFile}} — and NOTHING else
 ```json
 {
   "sprint": {{sprintNum}},
@@ -80,9 +71,8 @@ The Evaluator will review these dimensions during negotiation. You'll agree on t
 - The Evaluator designs its own verification strategy based on this
 
 # Remember
-- This is PLANNING only — do NOT implement features or write final content
-- Your plan and criteria will be reviewed by the Evaluator
-- Write tests that are rigorous but fair — edge cases matter
+- You write ONE file: {{progressFile}}. That's it. No other files.
+- Your plan will be reviewed by the Evaluator
 - The Evaluator will push back if your criteria are too vague or your tests have gaps
 - You and the Evaluator must agree before implementation begins
-- Implementation happens in a separate phase AFTER this plan is approved
+- All scaffolding, tests, stubs, and content are created in the IMPLEMENT phase, not here
