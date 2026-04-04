@@ -214,7 +214,7 @@ export async function implement(sprintNum: number): Promise<void> {
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
     const { sessionId } = await runAgent('Generator', loadPrompt('generator', {
-      principles, featurePrompt: feature.prompt,
+      principles, featurePrompt: feature.prompt, background: feature.background ?? '',
     }))
 
     const eval_ = parseEvaluation(feature.evaluation)
@@ -262,7 +262,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
       const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
         task,
-        scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
+        scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
       }), { outputFormat: SINGLE_REVIEW_SCHEMA })
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
       return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }

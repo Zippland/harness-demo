@@ -9,6 +9,7 @@ export interface Feature {
   id: string
   name: string
   prompt: string
+  background: string
   evaluation: Evaluation | string
   status: 'pending' | 'failing' | 'passing'
 }

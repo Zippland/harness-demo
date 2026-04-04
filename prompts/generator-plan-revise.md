@@ -46,6 +46,7 @@ Format:
       "id": "<unique id>",
       "name": "<display name>",
       "prompt": "<intent — WHAT and WHY>",
+      "background": "<WHY this feature exists — context and motivation>",
       "evaluation": {
         "checks": ["<deterministic commands>"],
         "intent": "<quality bar description>"

@@ -31,6 +31,7 @@ Read whatever files you need to understand the task. Explore the codebase, read 
       "id": "<unique id, must match describe() block name for coding tasks>",
       "name": "<short display name>",
       "prompt": "<describe the intent — WHAT and WHY, not exact steps>",
+      "background": "<WHY this feature exists — what problem it solves, what context led to it being split out>",
       "evaluation": {
         "checks": ["<deterministic commands that must pass>"],
         "intent": "<what 'done right' looks like from a user's perspective>"

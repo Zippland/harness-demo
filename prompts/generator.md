@@ -3,6 +3,9 @@
 # Task
 {{featurePrompt}}
 
+# Background
+{{background}}
+
 </TASK>
 
 # Think before you build
