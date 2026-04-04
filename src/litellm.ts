@@ -102,11 +102,11 @@ export async function startLiteLLM(custom: NonNullable<HarnessConfig['customMode
   })
   litellmProcess.stderr?.on('data', (data: Buffer) => {
     const line = data.toString().trim()
-    if (line) console.log(dim(`    [litellm] ${line.slice(0, 300)}`))
+    if (line && /error|exception|traceback/i.test(line)) console.log(dim(`    [litellm] ${line.slice(0, 300)}`))
   })
   litellmProcess.stdout?.on('data', (data: Buffer) => {
     const line = data.toString().trim()
-    if (line) console.log(dim(`    [litellm] ${line.slice(0, 300)}`))
+    if (line && /error|exception|traceback/i.test(line)) console.log(dim(`    [litellm] ${line.slice(0, 300)}`))
   })
 
   // 等待启动

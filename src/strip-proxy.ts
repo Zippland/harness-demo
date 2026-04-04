@@ -43,11 +43,6 @@ export function startStripProxy(targetUrl: string, port: number): Promise<void> 
       const fullPath = targetBase.pathname.replace(/\/$/, '') + incomingPath
       const target = new URL(fullPath, targetUrl)
 
-      // 调试日志
-      console.error(`[strip-proxy] ${req.method} ${req.url} → ${target.href}`)
-      if (parsedBody) {
-        console.error(`[strip-proxy] fields: ${Object.keys(parsedBody).join(', ')}`)
-      }
       const isHttps = target.protocol === 'https:'
       const doRequest = isHttps ? httpsRequest : httpRequest
 
