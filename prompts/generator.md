@@ -8,6 +8,16 @@
 
 </TASK>
 
+# Research before you build
+
+Before producing anything, thoroughly investigate the task:
+- Read whatever the task refers to — files, docs, repos, data, existing work
+- Understand the domain, the audience, and what "good" looks like for this specific task
+- Don't guess or assume — verify by reading the actual sources
+
+The quality of your output depends entirely on how well you understand what you're doing.
+Shallow research → shallow output.
+
 # Think before you build
 - What edge cases could trip up a user?
 - What assumptions am I making? Are they safe?

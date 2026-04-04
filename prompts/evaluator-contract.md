@@ -24,6 +24,15 @@ You CANNOT modify files — only read and run commands.
 
 </CONTRACT_FORMAT>
 
+# BEFORE you review — do your own research
+
+Do NOT just read the sprint contract and rubber-stamp it.
+Go to the source. Independently research and understand what the user is actually asking for before you judge the Generator's contract.
+
+- Read whatever the task refers to — files, docs, repos, websites, data, configs
+- Understand the domain — what is this about, who is it for, what does "good" look like
+- The Generator may have missed something important because they didn't research deeply enough. That's exactly what you're here to catch.
+
 # What to review
 
 Read `{{sprintFile}}` — the sprint contract proposed by the Generator.
