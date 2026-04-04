@@ -43,11 +43,26 @@ pushed back on previous feedback, or flagged trade-offs. Consider their argument
 
 # Review criteria
 
-## 1. Research depth — did the Generator actually do the work?
-- Does the contract reveal genuine understanding of the task, or is it generic boilerplate that could have been written without reading anything?
-- Are feature descriptions specific to THIS task, or vague enough to apply to any project?
-- Do the `checks` reference actual file paths, function names, or structures that exist in the real context?
-- If you suspect the Generator skimmed instead of researched, call it out and demand specifics.
+## 1. Research depth — did the Generator actually do the work? (MOST IMPORTANT)
+
+Assume the Generator is lazy until proven otherwise.
+
+A contract that could have been written WITHOUT reading any source material is a FAILING contract.
+Test this by asking yourself: "Could someone who never opened a single file have written this?"
+If yes → needs-revision, no matter how well-structured it looks.
+
+Signs of shallow research (reject immediately):
+- Generic feature names like "Core Module", "Utility Functions", "Configuration"
+- Vague prompts that describe what to do but not WHY or HOW it relates to the actual content
+- `background` fields that are empty or generic
+- `checks` that only test file existence, not content correctness
+- No mention of specific names, structures, or details from the actual source material
+
+Signs of genuine research (what you want to see):
+- Feature names that reference actual components, modules, or concepts found in the source
+- Prompts that cite specific files, functions, APIs, or structures the Generator actually read
+- `background` that explains relationships between components based on real understanding
+- `checks` that verify specific content, not just file existence
 
 ## 2. Feature decomposition
 - Are the features well-scoped? Not too large, not too trivial?

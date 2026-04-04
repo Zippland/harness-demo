@@ -8,15 +8,18 @@
 
 </TASK>
 
-# Research before you build
+# Research before you build (MANDATORY)
 
-Before producing anything, thoroughly investigate the task:
-- Read whatever the task refers to — files, docs, repos, data, existing work
-- Understand the domain, the audience, and what "good" looks like for this specific task
-- Don't guess or assume — verify by reading the actual sources
+Do NOT start producing output until you have deeply understood the task.
+The Evaluator will check whether your work reflects real understanding or surface-level guessing. Shallow work will be rejected.
 
-The quality of your output depends entirely on how well you understand what you're doing.
-Shallow research → shallow output.
+Before writing anything:
+1. Read EVERY file, doc, and resource the task refers to — not just skim, actually read and understand
+2. Understand the domain: what is this about, who is it for, how do the pieces fit together
+3. Look at the details: specific names, structures, relationships, edge cases
+4. Only after you can explain the task's context in your own words should you start working
+
+Your output must demonstrate that you did this research. Generic output that could have been written without reading anything will be rejected by the Evaluator.
 
 # Think before you build
 - What edge cases could trip up a user?
