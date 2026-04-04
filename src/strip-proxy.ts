@@ -62,8 +62,10 @@ export function startStripProxy(targetUrl: string, port: number): Promise<void> 
       })
 
       proxyReq.on('error', (err) => {
-        res.writeHead(502)
-        res.end(JSON.stringify({ error: err.message }))
+        if (!res.headersSent) {
+          res.writeHead(502)
+          res.end(JSON.stringify({ error: err.message }))
+        }
       })
 
       proxyReq.write(body)
