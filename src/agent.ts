@@ -31,7 +31,7 @@ export function loadPrompt(name: string, vars: Record<string, string>): string {
 export async function runAgent(
   role: Role,
   prompt: string,
-  opts: { resume?: string; outputFormat?: any } = {},
+  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any> } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
   const color = ROLE_STYLE[role]
   console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
@@ -42,6 +42,7 @@ export async function runAgent(
       cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
       ...AGENT_CONFIG[role],
+      ...(opts.toolOverrides ?? {}),
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(opts.outputFormat ? { outputFormat: opts.outputFormat } : {}),
     },
@@ -98,4 +99,59 @@ export async function runAgent(
   const fullResponse = joined.length > 5000 ? joined.slice(-5000) : joined
 
   return { sessionId, result: fullResponse, structured }
+}
+
+// ─── Research → Execute 两阶段 ───
+
+const RESEARCH_TOOLS = {
+  allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead'],
+  disallowedTools: ['Write', 'Edit'],
+}
+
+const RESEARCH_COMPLETE_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['research_complete'], description: 'Output this when you have finished your research and are ready to execute.' },
+    },
+    required: ['status'],
+  },
+}
+
+/**
+ * 两阶段模式：research → execute
+ *
+ * 消息序列：
+ *   user msg 1: context（所有上下文，XML 包裹）+ research prompt
+ *   → agent 调研（只有 Read 类工具）
+ *   user msg 2: execute prompt
+ *   → agent 执行（完整工具）
+ *
+ * @param context   所有上下文信息（task、principles、format 等），XML 包裹好的完整 prompt
+ * @param executePrompt  切换到执行模式时的指令
+ */
+export async function runWithResearch(
+  role: Role,
+  context: string,
+  executePrompt: string,
+  opts: { outputFormat?: any } = {},
+): Promise<{ sessionId: string; result: string; structured?: any }> {
+  const researchInstructions = readFileSync(resolve(PROMPTS_DIR, 'research.md'), 'utf-8')
+
+  // Phase 1: Research（上下文 + research 指令，只有 Read 类工具）
+  // agent 调研完毕后输出 { status: "research_complete" } 来主动移交
+  console.log(dim('    [research mode]'))
+  const research = await runAgent(role, `${context}\n\n---\n\n${researchInstructions}`, {
+    toolOverrides: RESEARCH_TOOLS,
+    outputFormat: RESEARCH_COMPLETE_SCHEMA,
+  })
+
+  // Phase 2: Execute（resume 同一 session，切换到完整工具）
+  console.log(dim('    [execute mode]'))
+  return runAgent(role, executePrompt, {
+    resume: research.sessionId,
+    toolOverrides: {},
+    ...opts,
+  })
 }

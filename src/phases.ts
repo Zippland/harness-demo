@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
-import { runAgent, loadPrompt } from './agent.js'
+import { runAgent, runWithResearch, loadPrompt } from './agent.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview } from './types.js'
@@ -113,11 +113,16 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 
   const contractVars = { task, principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum) }
 
-  const genPrompt = previousReview
-    ? loadPrompt('generator-contract-revise', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' })
-    : loadPrompt('generator-contract', contractVars)
+  let gen: { sessionId: string; result: string; structured?: any }
 
-  let gen = await runAgent('Generator', genPrompt)
+  if (previousReview) {
+    // 修订轮次：已有上下文，直接执行
+    gen = await runAgent('Generator', loadPrompt('generator-contract-revise', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' }))
+  } else {
+    // 首次起草：先 research 再写 contract
+    const context = loadPrompt('generator-contract', contractVars)
+    gen = await runWithResearch('Generator', context, 'Your research is complete. Now write the sprint contract based on your findings. Execute mode is active — you can create files.')
+  }
 
   // 验证 sprint 文件
   for (let fix = 0; fix < 3; fix++) {
@@ -227,9 +232,10 @@ export async function implement(sprintNum: number): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    const { sessionId } = await runAgent('Generator', loadPrompt('generator', {
+    const context = loadPrompt('generator', {
       principles, featurePrompt: feature.prompt, background: feature.background ?? '',
-    }))
+    })
+    const { sessionId } = await runWithResearch('Generator', context, 'Your research is complete. Now implement this feature based on your findings. Execute mode is active — you can create and modify files.')
 
     const eval_ = parseEvaluation(feature.evaluation)
     let passed = false

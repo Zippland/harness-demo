@@ -46,10 +46,10 @@ export function printReview(review: ReviewResult): void {
     const scoreStr = scores
       ? dim(' [' + Object.entries(scores).map(([k, v]) => `${k}:${v}`).join(' ') + ']')
       : ''
-    console.log(`    ${icon} ${bold(r.featureId)}${scoreStr} ${dim(r.comment.slice(0, 80))}`)
+    console.log(`    ${icon} ${bold(r.featureId)}${scoreStr} ${dim(r.comment)}`)
   }
   if (review.overallComment) {
-    console.log(`    ${dim('Overall:')} ${dim(review.overallComment.slice(0, 150))}`)
+    console.log(`    ${dim('Overall:')} ${dim(review.overallComment)}`)
   }
 }
 
