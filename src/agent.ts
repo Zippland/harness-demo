@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { config, WORK_DIR, PROMPTS_DIR } from './config.js'
+import { config, WORK_DIR, TOOL_DIR, PROMPTS_DIR } from './config.js'
 import { dim, cyan, yellow, red, ROLE_STYLE, logTool } from './ui.js'
 import type { Role } from './types.js'
 
@@ -31,10 +31,12 @@ export function loadPrompt(name: string, vars: Record<string, string>): string {
 export async function runAgent(
   role: Role,
   prompt: string,
-  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any> } = {},
+  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any>; silent?: boolean } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
-  const color = ROLE_STYLE[role]
-  console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
+  if (!opts.silent) {
+    const color = ROLE_STYLE[role]
+    console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
+  }
 
   const q = query({
     prompt,
@@ -103,12 +105,12 @@ export async function runAgent(
 
 // ─── Research → Execute 两阶段 ───
 
-const RESEARCH_TOOLS = {
+export const RESEARCH_TOOLS = {
   allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead'],
   disallowedTools: ['Write', 'Edit'],
 }
 
-const RESEARCH_COMPLETE_SCHEMA = {
+export const RESEARCH_COMPLETE_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
@@ -123,35 +125,36 @@ const RESEARCH_COMPLETE_SCHEMA = {
  * 两阶段模式：research → execute
  *
  * 消息序列：
- *   user msg 1: context（所有上下文，XML 包裹）+ research prompt
+ *   user msg 1: researchPrompt（含上下文 + 调研指令）
  *   → agent 调研（只有 Read 类工具）
- *   user msg 2: execute prompt
+ *   → agent 输出 { status: "research_complete" } 主动移交
+ *   user msg 2: executePrompt（执行指令）
  *   → agent 执行（完整工具）
- *
- * @param context   所有上下文信息（task、principles、format 等），XML 包裹好的完整 prompt
- * @param executePrompt  切换到执行模式时的指令
  */
 export async function runWithResearch(
   role: Role,
-  context: string,
+  researchPrompt: string,
   executePrompt: string,
   opts: { outputFormat?: any } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
-  const researchInstructions = readFileSync(resolve(PROMPTS_DIR, 'research.md'), 'utf-8')
+  const researchPrinciples = readFileSync(resolve(TOOL_DIR, 'control/research-principles.md'), 'utf-8')
 
-  // Phase 1: Research（上下文 + research 指令，只有 Read 类工具）
-  // agent 调研完毕后输出 { status: "research_complete" } 来主动移交
+  const color = ROLE_STYLE[role]
+  console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
   console.log(dim('    [research mode]'))
-  const research = await runAgent(role, `${context}\n\n---\n\n${researchInstructions}`, {
+
+  const research = await runAgent(role, `${researchPrompt}\n\n<RESEARCH_PRINCIPLES>\n\n${researchPrinciples}\n\n</RESEARCH_PRINCIPLES>`, {
     toolOverrides: RESEARCH_TOOLS,
     outputFormat: RESEARCH_COMPLETE_SCHEMA,
+    silent: true,  // 不重复打印 agent 标签
   })
 
-  // Phase 2: Execute（resume 同一 session，切换到完整工具）
+  // 同一 agent，切换模式
   console.log(dim('    [execute mode]'))
   return runAgent(role, executePrompt, {
     resume: research.sessionId,
     toolOverrides: {},
+    silent: true,
     ...opts,
   })
 }

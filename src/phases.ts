@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
-import { runAgent, runWithResearch, loadPrompt } from './agent.js'
+import { runAgent, runWithResearch, loadPrompt, RESEARCH_TOOLS, RESEARCH_COMPLETE_SCHEMA } from './agent.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview } from './types.js'
@@ -116,12 +116,15 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
   let gen: { sessionId: string; result: string; structured?: any }
 
   if (previousReview) {
-    // 修订轮次：已有上下文，直接执行
-    gen = await runAgent('Generator', loadPrompt('generator-contract-revise', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' }))
+    // 修订轮次：research evaluator feedback → execute revisions
+    const researchPrompt = loadPrompt('negotiate/generator-revise-research', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' })
+    const executePrompt = loadPrompt('negotiate/generator-revise-execute', contractVars)
+    gen = await runWithResearch('Generator', researchPrompt, executePrompt)
   } else {
-    // 首次起草：先 research 再写 contract
-    const context = loadPrompt('generator-contract', contractVars)
-    gen = await runWithResearch('Generator', context, 'Your research is complete. Now write the sprint contract based on your findings. Execute mode is active — you can create files.')
+    // 首次起草：research task → execute contract writing
+    const researchPrompt = loadPrompt('negotiate/generator-research', { task })
+    const executePrompt = loadPrompt('negotiate/generator-execute', contractVars)
+    gen = await runWithResearch('Generator', researchPrompt, executePrompt)
   }
 
   // 验证 sprint 文件
@@ -159,13 +162,21 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
   let evalSessionId = ''
 
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
-    const evalPrompt = loadPrompt('evaluator-contract', {
-      task, principles, contractFormat, sprintFile, generatorResponse: generatorSaid,
+    // Evaluator: research → execute
+    const evalResearch = loadPrompt('negotiate/evaluator-research', {
+      task, sprintFile, generatorResponse: generatorSaid,
     })
-    const evalResult = await runAgent('Evaluator', evalPrompt, {
-      outputFormat: CONTRACT_REVIEW_SCHEMA,
-      ...(evalSessionId ? { resume: evalSessionId } : {}),
-    })
+    const evalExecute = loadPrompt('negotiate/evaluator-execute', { principles })
+    const evalResult = evalSessionId
+      // 后续轮次：resume，只需要 research 新的 generator response
+      ? await (async () => {
+          console.log(dim('    [research mode]'))
+          const r = await runAgent('Evaluator', evalResearch, { resume: evalSessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
+          console.log(dim('    [execute mode]'))
+          return runAgent('Evaluator', evalExecute, { resume: r.sessionId, outputFormat: CONTRACT_REVIEW_SCHEMA, silent: true })
+        })()
+      // 首轮：全新 session
+      : await runWithResearch('Evaluator', evalResearch, evalExecute, { outputFormat: CONTRACT_REVIEW_SCHEMA })
     evalSessionId = evalResult.sessionId
     const { structured, result: evaluatorSaid } = evalResult
 
@@ -184,9 +195,15 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 
     if (round < config.maxNegotiateRounds) {
       console.log(`\n    ${yellow('Discussion')} ${dim(`round ${round}/${config.maxNegotiateRounds}`)}`)
-      const genResponse = await runAgent('Generator', loadPrompt('generator-contract-revise', {
+      const reviseResearch = loadPrompt('negotiate/generator-revise-research', {
         ...contractVars, feedback: formatReviewFeedback(review), evaluatorReasoning: evaluatorSaid,
-      }), { resume: gen.sessionId })
+      })
+      const reviseExecute = loadPrompt('negotiate/generator-revise-execute', contractVars)
+      // resume Generator session, research → execute
+      console.log(dim('    [research mode]'))
+      const researchResult = await runAgent('Generator', reviseResearch, { resume: gen.sessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
+      console.log(dim('    [execute mode]'))
+      const genResponse = await runAgent('Generator', reviseExecute, { resume: researchResult.sessionId, silent: true })
       generatorSaid = genResponse.result
     }
   }
@@ -232,10 +249,11 @@ export async function implement(sprintNum: number): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    const context = loadPrompt('generator', {
-      principles, featurePrompt: feature.prompt, background: feature.background ?? '',
+    const researchPrompt = loadPrompt('implement/generator-research', {
+      featurePrompt: feature.prompt, background: feature.background ?? '',
     })
-    const { sessionId } = await runWithResearch('Generator', context, 'Your research is complete. Now implement this feature based on your findings. Execute mode is active — you can create and modify files.')
+    const executePrompt = loadPrompt('implement/generator-execute', { principles })
+    const { sessionId } = await runWithResearch('Generator', researchPrompt, executePrompt)
 
     const eval_ = parseEvaluation(feature.evaluation)
     let passed = false
@@ -252,7 +270,10 @@ export async function implement(sprintNum: number): Promise<void> {
         }
         console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${config.maxL1Retries}`)}`)
         if (attempt < config.maxL1Retries) {
-          await runAgent('Generator', loadPrompt('generator-retry', { feedback: check.output }), { resume: sessionId })
+          console.log(dim('    [research mode]'))
+          const retryResearch = await runAgent('Generator', loadPrompt('implement/generator-retry-research', { feedback: check.output }), { resume: sessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
+          console.log(dim('    [execute mode]'))
+          await runAgent('Generator', loadPrompt('implement/generator-retry-execute', {}), { resume: retryResearch.sessionId, silent: true })
         }
       }
     }
@@ -280,10 +301,12 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
   for (const feature of sprint.features) {
     reviewFns.push(() => (async () => {
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
-      const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
-        task,
-        scope: `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}\n\nVerify this specific feature works correctly. Run it, test edge cases, check the implementation.`,
-      }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+      const scope = `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}`
+      const { structured } = await runWithResearch('Evaluator',
+        loadPrompt('review/reviewer-research', { task, scope }),
+        loadPrompt('review/reviewer-execute', {}),
+        { outputFormat: SINGLE_REVIEW_SCHEMA },
+      )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
       return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }
     })())
@@ -292,10 +315,12 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
   for (const dimen of (sprint.reviewDimensions ?? [])) {
     reviewFns.push(() => (async () => {
       console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
-      const { structured } = await runAgent('Evaluator', loadPrompt('reviewer', {
-        task,
-        scope: `**Dimension: ${dimen.name}**\n${dimen.description}\n\nReview the ENTIRE implementation against this quality dimension.\n\nGolden Principles:\n${principles}`,
-      }), { outputFormat: SINGLE_REVIEW_SCHEMA })
+      const scope = `**Dimension: ${dimen.name}**\n${dimen.description}\n\nGolden Principles:\n${principles}`
+      const { structured } = await runWithResearch('Evaluator',
+        loadPrompt('review/reviewer-research', { task, scope }),
+        loadPrompt('review/reviewer-execute', {}),
+        { outputFormat: SINGLE_REVIEW_SCHEMA },
+      )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
       return { id: dimen.name, type: 'dimension' as const, status: r.status, score: r.score, comment: r.comment }
     })())
@@ -336,7 +361,11 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
 export async function holisticReview(task: string): Promise<{ pass: boolean; feedback: string }> {
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
 
-  const { structured } = await runAgent('Evaluator', loadPrompt('reviewer-holistic', { task }), { outputFormat: HOLISTIC_SCHEMA })
+  const { structured } = await runWithResearch('Evaluator',
+    loadPrompt('review/holistic-research', { task }),
+    loadPrompt('review/holistic-execute', {}),
+    { outputFormat: HOLISTIC_SCHEMA },
+  )
 
   const result = structured as any
   if (!result || typeof result !== 'object') {
