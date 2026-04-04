@@ -43,7 +43,13 @@ pushed back on previous feedback, or flagged trade-offs. Consider their argument
 
 # Review criteria
 
-## 1. Feature decomposition
+## 1. Research depth — did the Generator actually do the work?
+- Does the contract reveal genuine understanding of the task, or is it generic boilerplate that could have been written without reading anything?
+- Are feature descriptions specific to THIS task, or vague enough to apply to any project?
+- Do the `checks` reference actual file paths, function names, or structures that exist in the real context?
+- If you suspect the Generator skimmed instead of researched, call it out and demand specifics.
+
+## 2. Feature decomposition
 - Are the features well-scoped? Not too large, not too trivial?
 - Is the ordering logical? Do dependencies flow correctly?
 - Is anything missing that the original task requires?
