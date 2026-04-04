@@ -147,11 +147,11 @@ harness "task"
 
 ```
 prompts/
-├── generator-plan.md         # Generator 提出计划
-├── generator-plan-revise.md  # Generator 回应 Evaluator 反馈
+├── generator-contract.md         # Generator 起草 Sprint Contract
+├── generator-contract-revise.md  # Generator 回应 Evaluator 反馈
 ├── generator.md              # Generator 实现 feature
 ├── generator-retry.md        # Generator 修复 L1 失败
-├── evaluator-plan.md         # Evaluator 审计划
+├── evaluator-contract.md     # Evaluator 审 Sprint Contract
 └── evaluator-review.md       # Evaluator 全局审查
 ```
 

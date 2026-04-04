@@ -40,8 +40,8 @@ The system runs a Sprint loop: **negotiate → implement → review → holistic
 
 All agent prompts are external markdown files with `{{variable}}` placeholders, loaded by `loadPrompt()` in `agent.ts`.
 
-- `generator-plan.md` / `generator-plan-revise.md` — negotiate phase
-- `evaluator-plan.md` — negotiate phase (Evaluator side)
+- `generator-contract.md` / `generator-contract-revise.md` — negotiate phase
+- `evaluator-contract.md` — negotiate phase (Evaluator side)
 - `generator.md` / `generator-retry.md` — implement phase
 - `reviewer.md` — N+M parallel review (one per feature/dimension)
 - `reviewer-holistic.md` — final holistic audit

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
+import { resolve } from 'path'
 import { execSync } from 'child_process'
-import { config, WORK_DIR, PRINCIPLES_FILE } from './config.js'
+import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
@@ -8,7 +9,7 @@ import type { ReviewResult, SingleReview } from './types.js'
 
 // ─── JSON Schemas ───
 
-const PLAN_REVIEW_SCHEMA = {
+const CONTRACT_REVIEW_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
@@ -107,14 +108,14 @@ async function runPool<T>(fns: (() => Promise<T>)[], concurrency: number): Promi
 export async function negotiate(task: string, sprintNum: number, previousReview?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
+  const contractFormat = readFileSync(resolve(TOOL_DIR, 'control/contract-format.md'), 'utf-8')
   const sprintFile = sprintPath(sprintNum)
 
+  const contractVars = { task, principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum) }
+
   const genPrompt = previousReview
-    ? loadPrompt('generator-plan-revise', {
-        feedback: previousReview, evaluatorReasoning: '', task, principles,
-        progressFile: sprintFile, sprintNum: String(sprintNum),
-      })
-    : loadPrompt('generator-plan', { task, principles, progressFile: sprintFile, sprintNum: String(sprintNum) })
+    ? loadPrompt('generator-contract-revise', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' })
+    : loadPrompt('generator-contract', contractVars)
 
   let gen = await runAgent('Generator', genPrompt)
 
@@ -153,11 +154,11 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
   let evalSessionId = ''
 
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
-    const evalPrompt = loadPrompt('evaluator-plan', {
-      task, principles, sprintFile, generatorResponse: generatorSaid,
+    const evalPrompt = loadPrompt('evaluator-contract', {
+      task, principles, contractFormat, sprintFile, generatorResponse: generatorSaid,
     })
     const evalResult = await runAgent('Evaluator', evalPrompt, {
-      outputFormat: PLAN_REVIEW_SCHEMA,
+      outputFormat: CONTRACT_REVIEW_SCHEMA,
       ...(evalSessionId ? { resume: evalSessionId } : {}),
     })
     evalSessionId = evalResult.sessionId
@@ -178,9 +179,8 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 
     if (round < config.maxNegotiateRounds) {
       console.log(`\n    ${yellow('Discussion')} ${dim(`round ${round}/${config.maxNegotiateRounds}`)}`)
-      const genResponse = await runAgent('Generator', loadPrompt('generator-plan-revise', {
-        feedback: formatReviewFeedback(review), evaluatorReasoning: evaluatorSaid,
-        task, principles, progressFile: sprintFile, sprintNum: String(sprintNum),
+      const genResponse = await runAgent('Generator', loadPrompt('generator-contract-revise', {
+        ...contractVars, feedback: formatReviewFeedback(review), evaluatorReasoning: evaluatorSaid,
       }), { resume: gen.sessionId })
       generatorSaid = genResponse.result
     }

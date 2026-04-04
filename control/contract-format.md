@@ -1,27 +1,12 @@
-You are proposing a development plan for the following task.
-Your plan will be reviewed by an independent Evaluator — think of this as a negotiation.
+# Sprint Contract Format
 
-<TASK>
+The sprint contract file defines what will be built and how it will be evaluated.
 
-# Task
-{{task}}
+## File format
 
-</TASK>
-
-# CRITICAL: This is the PLANNING phase, NOT the implementation phase.
-Your ONLY output is ONE file: the sprint file at {{progressFile}}.
-Do NOT create, edit, or write ANY other files. No scaffolding, no stubs, no tests, no code, no content.
-Read whatever you need to understand the task, but ONLY write the sprint file.
-
-# What you must produce
-
-## 1. Research the task
-Read whatever files you need to understand the task. Explore the codebase, read docs, understand the domain.
-
-## 2. Write the sprint file — {{progressFile}} — and NOTHING else
 ```json
 {
-  "sprint": {{sprintNum}},
+  "sprint": <sprint number>,
   "task": "<the original task, verbatim>",
   "reviewDimensions": [
     { "name": "<dimension name>", "description": "<what this dimension measures, specific to this task>" }
@@ -42,14 +27,7 @@ Read whatever files you need to understand the task. Explore the codebase, read 
 }
 ```
 
-<Golden_Principles>
-
-# Golden Principles
-{{principles}}
-
-</Golden_Principles>
-
-# How to write `reviewDimensions`
+## How to write `reviewDimensions`
 
 Define 3–5 dimensions that the Evaluator will score on (1-5 scale) during the review phase.
 Dimensions should be SPECIFIC to this task, not generic. Examples:
@@ -58,9 +36,7 @@ Dimensions should be SPECIFIC to this task, not generic. Examples:
 - Wiki task: `{ "name": "accuracy", "description": "Content matches the source repository's actual code and architecture" }`
 - Documentation: `{ "name": "followability", "description": "A new developer can complete every step without external help" }`
 
-The Evaluator will review these dimensions during negotiation. You'll agree on them before implementation starts.
-
-# How to write `evaluation`
+## How to write `evaluation`
 
 ### `checks` — deterministic commands the orchestrator runs automatically (zero cost)
 - Must be valid shell commands that exit 0 on success, non-zero on failure
@@ -71,9 +47,7 @@ The Evaluator will review these dimensions during negotiation. You'll agree on t
 - Describe what "done right" looks like, not what commands to run
 - The Evaluator designs its own verification strategy based on this
 
-# Remember
-- You write ONE file: {{progressFile}}. That's it. No other files.
-- Your plan will be reviewed by the Evaluator
-- The Evaluator will push back if your criteria are too vague or your tests have gaps
-- You and the Evaluator must agree before implementation begins
-- All scaffolding, tests, stubs, and content are created in the IMPLEMENT phase, not here
+## How to write `background`
+- Explain WHY this feature was split out as a separate unit
+- What problem does it solve? What context led to it?
+- This helps both the Generator (during implementation) and the Evaluator (during review) understand the motivation
