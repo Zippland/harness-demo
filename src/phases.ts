@@ -186,9 +186,23 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
     }
   }
 
-  const sprint = loadSprint(sprintNum)
-  console.log(green(`\n  Sprint ${sprintNum}: ${sprint.features.length} features`))
-  for (const f of sprint.features) console.log(`    ${dim('·')} ${f.name}`)
+  // 协商结束后，验证 sprint 文件可读
+  let finalSprint = tryLoadSprint(sprintNum)
+  if (!finalSprint.sprint) {
+    console.log(red(`    Sprint file has invalid JSON after negotiation: ${finalSprint.error}`))
+    console.log(dim('    Asking Generator to fix...'))
+    await runAgent('Generator',
+      `The sprint contract at ${sprintFile} has invalid JSON:\n\n${finalSprint.error}\n\nPlease read the file, fix the JSON syntax error (common issues: unescaped backslashes or quotes inside string values), and write it back.`,
+      { resume: gen.sessionId },
+    )
+    finalSprint = tryLoadSprint(sprintNum)
+    if (!finalSprint.sprint) {
+      throw new Error(`Sprint file still invalid after fix attempt: ${finalSprint.error}`)
+    }
+  }
+
+  console.log(green(`\n  Sprint ${sprintNum}: ${finalSprint.sprint.features.length} features`))
+  for (const f of finalSprint.sprint.features) console.log(`    ${dim('·')} ${f.name}`)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
