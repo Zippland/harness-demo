@@ -170,6 +170,7 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
     const evalResult = evalSessionId
       // 后续轮次：resume，只需要 research 新的 generator response
       ? await (async () => {
+          console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim('──')}`)
           console.log(dim('    [research mode]'))
           const r = await runAgent('Evaluator', evalResearch, { resume: evalSessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
           console.log(dim('    [execute mode]'))
@@ -200,6 +201,7 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
       })
       const reviseExecute = loadPrompt('negotiate/generator-revise-execute', contractVars)
       // resume Generator session, research → execute
+      console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
       console.log(dim('    [research mode]'))
       const researchResult = await runAgent('Generator', reviseResearch, { resume: gen.sessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
       console.log(dim('    [execute mode]'))
@@ -270,6 +272,7 @@ export async function implement(sprintNum: number): Promise<void> {
         }
         console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${config.maxL1Retries}`)}`)
         if (attempt < config.maxL1Retries) {
+          console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
           console.log(dim('    [research mode]'))
           const retryResearch = await runAgent('Generator', loadPrompt('implement/generator-retry-research', { feedback: check.output }), { resume: sessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
           console.log(dim('    [execute mode]'))
