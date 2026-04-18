@@ -93,10 +93,12 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 │  Phase 1: IMPLEMENT (L1 Loop)                               │
 │                                                              │
 │  for each feature:                                           │
-│    1. Generator researches & implements                     │
-│    2. Run deterministic checks (L1)                         │
-│    3. If fail: Generator retries (up to maxL1Retries)       │
-│    4. Update feature.status                                 │
+│    1. Generator (新 session) + 前序 summaries               │
+│    2. Research & implement                                  │
+│    3. Run deterministic checks (L1)                         │
+│    4. If fail: Generator retries (up to maxL1Retries)       │
+│    5. Summarizer (resume session) → feature.summary         │
+│    6. Update feature.status                                 │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -171,6 +173,45 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 - Research 阶段的工具受限防止 Agent 跳过思考直接修改文件
 - 两阶段之间的上下文传递保证了研究成果被利用
 
+### 4.3 Compact Summary 机制
+
+同一 Sprint 内的多个 Feature 需要上下文传递，但完整 session 上下文会线性增长。Compact Summary 解决这个问题：
+
+```
+feature 1: 新 session
+  ↓ 执行
+  ↓ Summarizer (resume session1 + []) → summary1
+
+feature 2: 新 session + [summary1]
+  ↓ 执行
+  ↓ Summarizer (resume session2 + [summary1]) → summary2
+
+feature 3: 新 session + [summary1, summary2]
+  ↓ 执行
+  ↓ Summarizer (resume session3 + [summary1, summary2]) → summary3
+```
+
+**核心设计**：
+
+| 组件 | 输入 | 输出 |
+|-----|------|-----|
+| Feature N 执行 | 新 session + summaries[0..n-1] | 代码变更 |
+| Summarizer | resume session[n] + summaries[0..n-1] | summary[n] |
+
+**设计理由**：
+
+- **每个 Feature 独立 session**：上下文干净，不存在越来越长的问题
+- **Summarizer resume 执行 session**：能看到完整执行细节，生成高质量摘要
+- **滚动压缩**：旧的上下文被压缩为 summary，新的上下文保持完整
+- **状态外部化**：summary 存储在 sprint 文件中，断点恢复友好
+
+**Summary 内容**（由 Agent 自行判断）：
+
+- What was done（做了什么，避免重复）
+- What was produced（产出了什么可依赖的东西）
+- What decisions were made（做了什么影响后续的决策）
+- What went wrong（如果 L1 失败，有什么问题）
+
 ---
 
 ## 五、核心数据结构
@@ -198,6 +239,7 @@ interface Feature {
     intent: string                  // 功能意图（供 Evaluator 理解）
   }
   status: 'pending' | 'failing' | 'passing'
+  summary?: string                  // Compact summary 供后续 feature 参考
 }
 
 interface ReviewDimension {

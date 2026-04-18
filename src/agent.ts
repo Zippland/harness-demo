@@ -135,7 +135,7 @@ export async function runWithResearch(
   role: Role,
   researchPrompt: string,
   executePrompt: string,
-  opts: { outputFormat?: any } = {},
+  opts: { outputFormat?: any; resume?: string } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
   const researchPrinciples = readFileSync(resolve(TOOL_DIR, 'control/research-principles.md'), 'utf-8')
 
@@ -146,7 +146,8 @@ export async function runWithResearch(
   const research = await runAgent(role, `${researchPrompt}\n\n<RESEARCH_PRINCIPLES>\n\n${researchPrinciples}\n\n</RESEARCH_PRINCIPLES>`, {
     toolOverrides: RESEARCH_TOOLS,
     outputFormat: RESEARCH_COMPLETE_SCHEMA,
-    silent: true,  // 不重复打印 agent 标签
+    silent: true,
+    ...(opts.resume ? { resume: opts.resume } : {}),
   })
 
   // 同一 agent，切换模式
@@ -155,6 +156,6 @@ export async function runWithResearch(
     resume: research.sessionId,
     toolOverrides: {},
     silent: true,
-    ...opts,
+    outputFormat: opts.outputFormat,
   })
 }

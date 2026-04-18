@@ -57,6 +57,20 @@ const HOLISTIC_SCHEMA = {
   },
 }
 
+const SUMMARY_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      summary: {
+        type: 'string',
+        description: 'Compact summary (max 300 chars) for subsequent features: key changes, interfaces created, important decisions',
+      },
+    },
+    required: ['summary'],
+  },
+}
+
 // ─── Helpers ───
 
 function parseReview(structured: any): ReviewResult | null {
@@ -251,11 +265,20 @@ export async function implement(sprintNum: number): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
+    // 构建前序 feature 的 compact summaries (0..n-1)
+    const previousSummaries = sprint.features
+      .slice(0, i)
+      .filter((f) => f.summary)
+      .map((f) => `- **${f.name}** [${f.status}]: ${f.summary}`)
+    const summaryBlock = previousSummaries.length > 0
+      ? `<PREVIOUS_FEATURES>\n\nThese features were implemented earlier in this sprint:\n\n${previousSummaries.join('\n')}\n\n</PREVIOUS_FEATURES>`
+      : ''
+
     const researchPrompt = loadPrompt('implement/generator-research', {
-      featurePrompt: feature.prompt, background: feature.background ?? '',
+      featurePrompt: feature.prompt, background: feature.background ?? '', previousSummaries: summaryBlock,
     })
     const executePrompt = loadPrompt('implement/generator-execute', { principles })
-    const { sessionId } = await runWithResearch('Generator', researchPrompt, executePrompt)
+    let { sessionId: finalSessionId } = await runWithResearch('Generator', researchPrompt, executePrompt)
 
     const eval_ = parseEvaluation(feature.evaluation)
     let passed = false
@@ -274,14 +297,21 @@ export async function implement(sprintNum: number): Promise<void> {
         if (attempt < config.maxL1Retries) {
           console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
           console.log(dim('    [research mode]'))
-          const retryResearch = await runAgent('Generator', loadPrompt('implement/generator-retry-research', { feedback: check.output }), { resume: sessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
+          const retryResearch = await runAgent('Generator', loadPrompt('implement/generator-retry-research', { feedback: check.output }), { resume: finalSessionId, toolOverrides: RESEARCH_TOOLS, outputFormat: RESEARCH_COMPLETE_SCHEMA, silent: true })
           console.log(dim('    [execute mode]'))
-          await runAgent('Generator', loadPrompt('implement/generator-retry-execute', {}), { resume: retryResearch.sessionId, silent: true })
+          const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry-execute', {}), { resume: retryResearch.sessionId, silent: true })
+          finalSessionId = retryResult.sessionId
         }
       }
     }
 
     feature.status = passed ? 'passing' : 'failing'
+
+    // Summarizer: resume 当前 session + 注入前序 summaries，生成 compact summary
+    const statusHint = passed ? '' : '\n- What went wrong (L1 checks failed)'
+    const summaryPrompt = loadPrompt('implement/generator-summary', { statusHint, previousSummaries: summaryBlock })
+    const summaryResult = await runAgent('Generator', summaryPrompt, { resume: finalSessionId, outputFormat: SUMMARY_SCHEMA, silent: true })
+    feature.summary = summaryResult.structured?.summary ?? ''
     writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
     if (!passed) console.log(`    ${red('L1 gave up')}`)
   }

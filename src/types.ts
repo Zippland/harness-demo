@@ -12,6 +12,7 @@ export interface Feature {
   background: string
   evaluation: Evaluation | string
   status: 'pending' | 'failing' | 'passing'
+  summary?: string  // Compact context for subsequent features
 }
 
 export interface ReviewDimension {

@@ -14,6 +14,8 @@ You will be implementing the following feature. But first, understand it deeply.
 
 </BACKGROUND>
 
+{{previousSummaries}}
+
 # What to investigate
 
 - Read every file, doc, and resource relevant to this feature
