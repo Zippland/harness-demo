@@ -312,13 +312,35 @@ export function archiveTask(taskId: string, pending: PendingTask): void {
 
 export function buildInquiryReference(specPath?: string, sessionPath?: string): string {
   if (!specPath || !existsSync(specPath)) {
-    return '<TASK_SPEC>\nNo inquiry was performed for this task. Proceed with the original task description only.\n</TASK_SPEC>'
+    return '<TASK_SPEC>\nNo inquiry was performed for this task. No authoritative spec is available.\n</TASK_SPEC>'
   }
   const spec = readFileSync(specPath, 'utf-8').trim()
-  const sessionLine = sessionPath
-    ? `\n\n<INQUIRY_SESSION>\nThe full, unabridged discussion is at: ${sessionPath}\n\nRead this file ONLY when the spec above fails to disambiguate. It contains every turn of the conversation including directions the user explicitly rejected.\n</INQUIRY_SESSION>`
+
+  const specNote = [
+    '',
+    'The `<TASK_SPEC>` above is this task\'s **source of truth** — authoritative and prescriptive.',
+    'Any conceptual change (scope, non-goals, success criteria, intent) must be made by updating',
+    'the spec first, then the code/contract. Do not silently deviate. If you believe the spec is',
+    'wrong or incomplete, flag it explicitly in your response — do not work around it.',
+  ].join('\n')
+
+  const sessionBlock = sessionPath
+    ? [
+        '',
+        '<INQUIRY_SESSION>',
+        '',
+        `The full, unabridged discovery discussion is at: ${sessionPath}`,
+        '',
+        'Unlike the spec (which is authoritative but revisable), the session is **immutable ground',
+        'truth** — it records what was actually said during discovery and never changes. Read it',
+        'only when the spec fails to disambiguate. It contains every turn of the conversation,',
+        'including directions the user explicitly rejected.',
+        '',
+        '</INQUIRY_SESSION>',
+      ].join('\n')
     : ''
-  return `<TASK_SPEC>\n\n${spec}\n\n</TASK_SPEC>${sessionLine}`
+
+  return `<TASK_SPEC>\n\n${spec}\n\n</TASK_SPEC>${specNote}${sessionBlock}`
 }
 
 export function referenceFromInquiryDir(inquiryDir?: string): string {
