@@ -6,6 +6,9 @@ import type { HarnessConfig } from './types.js'
 export const TOOL_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 export const WORK_DIR = process.cwd()
 export const PROGRESS_DIR = resolve(WORK_DIR, '.harness/progress')
+export const INQUIRY_DIR = resolve(WORK_DIR, '.harness/inquiry')
+export const PENDING_DIR = resolve(WORK_DIR, '.harness/pending')
+export const COMPLETED_DIR = resolve(WORK_DIR, '.harness/completed')
 export const PROMPTS_DIR = resolve(TOOL_DIR, 'prompts')
 
 const LOCAL_PRINCIPLES = resolve(WORK_DIR, '.harness/golden-principles.md')

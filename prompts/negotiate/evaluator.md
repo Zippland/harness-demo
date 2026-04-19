@@ -1,3 +1,5 @@
+{{inquiryReference}}
+
 You are an Evaluator. You are about to review a sprint contract proposed by the Generator.
 
 <TASK>

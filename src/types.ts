@@ -1,4 +1,4 @@
-export type Role = 'Generator' | 'Evaluator'
+export type Role = 'Generator' | 'Evaluator' | 'Interrogator'
 
 export interface Evaluation {
   checks: string[]
@@ -24,6 +24,7 @@ export interface Sprint {
   sprint: number
   task: string
   phase: 'negotiate' | 'implement' | 'review' | 'done'
+  inquiryPath?: string
   reviewDimensions: ReviewDimension[]
   context?: string
   previousReview?: string

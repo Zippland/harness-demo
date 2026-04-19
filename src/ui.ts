@@ -15,6 +15,7 @@ export const magenta = (s: string) => `\x1b[35m${s}\x1b[0m`
 export const ROLE_STYLE: Record<Role, (s: string) => string> = {
   Generator: yellow,
   Evaluator: magenta,
+  Interrogator: cyan,
 }
 
 export function shortPath(p: string): string {

@@ -1,3 +1,5 @@
+{{inquiryReference}}
+
 You are a Generator. You will implement one feature of a sprint contract.
 
 <TASK>

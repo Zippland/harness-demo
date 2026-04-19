@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
+import { referenceFromInquiryDir } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview } from './types.js'
@@ -119,13 +120,14 @@ async function runPool<T>(fns: (() => Promise<T>)[], concurrency: number): Promi
 // Phase 0: negotiate
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function negotiate(task: string, sprintNum: number, previousReview?: string): Promise<void> {
+export async function negotiate(task: string, sprintNum: number, previousReview?: string, inquiryPath?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const contractFormat = readFileSync(resolve(TOOL_DIR, 'control/contract-format.md'), 'utf-8')
   const sprintFile = sprintPath(sprintNum)
+  const inquiryReference = referenceFromInquiryDir(inquiryPath)
 
-  const contractVars = { task, principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum) }
+  const contractVars = { task, principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum), inquiryReference }
 
   let gen: { sessionId: string; result: string; structured?: any }
 
@@ -162,8 +164,16 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
     process.exit(1)
   }
 
+  let sprintDirty = false
   if (!initialSprint.phase) {
     initialSprint.phase = 'negotiate'
+    sprintDirty = true
+  }
+  if (inquiryPath && initialSprint.inquiryPath !== inquiryPath) {
+    initialSprint.inquiryPath = inquiryPath
+    sprintDirty = true
+  }
+  if (sprintDirty) {
     writeFileSync(sprintFile, JSON.stringify(initialSprint, null, 2))
   }
 
@@ -173,7 +183,7 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
     const evalPrompt = loadPrompt('negotiate/evaluator', {
-      task, sprintFile, generatorResponse: generatorSaid, principles,
+      task, sprintFile, generatorResponse: generatorSaid, principles, inquiryReference,
     })
     if (evalSessionId) {
       console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim('──')}`)
@@ -234,6 +244,7 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 export async function implement(sprintNum: number): Promise<void> {
   const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
+  const inquiryReference = referenceFromInquiryDir(sprint.inquiryPath)
   const total = sprint.features.length
   const pending = sprint.features.filter((f) => f.status !== 'passing')
 
@@ -259,7 +270,7 @@ export async function implement(sprintNum: number): Promise<void> {
       : ''
 
     const prompt = loadPrompt('implement/generator', {
-      featurePrompt: feature.prompt, background: feature.background ?? '', previousSummaries: summaryBlock, principles,
+      featurePrompt: feature.prompt, background: feature.background ?? '', previousSummaries: summaryBlock, principles, inquiryReference,
     })
     let { sessionId: finalSessionId } = await runAgent('Generator', prompt)
 
@@ -279,7 +290,7 @@ export async function implement(sprintNum: number): Promise<void> {
         console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${config.maxL1Retries}`)}`)
         if (attempt < config.maxL1Retries) {
           console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
-          const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output }), { resume: finalSessionId, silent: true })
+          const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output, inquiryReference }), { resume: finalSessionId, silent: true })
           finalSessionId = retryResult.sessionId
         }
       }
@@ -308,6 +319,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
   const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
+  const inquiryReference = referenceFromInquiryDir(sprint.inquiryPath)
 
   const reviewFns: (() => Promise<SingleReview>)[] = []
 
@@ -316,7 +328,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
       const scope = `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}`
       const { structured } = await runAgent('Evaluator',
-        loadPrompt('review/reviewer', { task, scope }),
+        loadPrompt('review/reviewer', { task, scope, inquiryReference }),
         { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
       )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
@@ -329,7 +341,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
       console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
       const scope = `**Dimension: ${dimen.name}**\n${dimen.description}\n\nGolden Principles:\n${principles}`
       const { structured } = await runAgent('Evaluator',
-        loadPrompt('review/reviewer', { task, scope }),
+        loadPrompt('review/reviewer', { task, scope, inquiryReference }),
         { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
       )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
@@ -369,11 +381,12 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
 // Phase 3: holisticReview
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function holisticReview(task: string): Promise<{ pass: boolean; feedback: string }> {
+export async function holisticReview(task: string, inquiryPath?: string): Promise<{ pass: boolean; feedback: string }> {
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
+  const inquiryReference = referenceFromInquiryDir(inquiryPath)
 
   const { structured } = await runAgent('Evaluator',
-    loadPrompt('review/holistic', { task }),
+    loadPrompt('review/holistic', { task, inquiryReference }),
     { outputFormat: HOLISTIC_SCHEMA },
   )
 

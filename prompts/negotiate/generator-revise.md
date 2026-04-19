@@ -1,3 +1,5 @@
+{{inquiryReference}}
+
 You are a Generator. The Evaluator has reviewed your sprint contract.
 
 <EVALUATOR_FEEDBACK>

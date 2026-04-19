@@ -50,6 +50,7 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 | **控制器 (Controller)** | Sprint Contract 中的验收标准 + Golden Principles |
 | **执行器 (Actuator)** | Generator Agent 的文件读写能力 |
 | **反馈回路 (Feedback Loop)** | Sprint 循环 + N+M 并行审查 + Holistic Review |
+| **参考信号 (Reference Signal)** | Spec (压缩 markdown，内联注入) + Session (jsonl，按需查阅) 的双层结构 |
 
 ### 核心设计原则
 
@@ -68,6 +69,20 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 用户任务
     │
     ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Phase -1: INQUIRY (live, human-in-loop)                    │
+│                                                              │
+│  User ◄──── Interrogator (苏格拉底式反问)                   │
+│    │                │                                        │
+│    │                │  只反问，不 propose                   │
+│    │                │  用户说 "done" 收敛                   │
+│    │                │                                        │
+│    └──► Complete transcript (未压缩) ──► pending/<id>.json  │
+│                                                              │
+│  跨越所有后续 phase 的 reference signal                     │
+└─────────────────────────────────────────────────────────────┘
+                            │
+                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Phase 0: NEGOTIATE                                         │
 │  ┌─────────────────────────────────────────────────────────┐│
@@ -141,39 +156,7 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 └─────────────────────────┘
 ```
 
-### 4.2 两阶段 Agent 执行模式
-
-每个 Agent 调用都分为两个阶段：
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  RESEARCH MODE                                               │
-│  ─────────────────────────────────────────────────────────── │
-│  · Only read/search/explore — CANNOT create or modify files │
-│  · Tools: Glob, Grep, Read, WebFetch, WebSearch, Bash(只读)  │
-│  · 目的：深度理解任务上下文，避免浅层研究                     │
-│                                                              │
-│  Output: Research findings (injected into execute mode)     │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│  EXECUTE MODE                                                │
-│  ─────────────────────────────────────────────────────────── │
-│  · Full tool access based on role                           │
-│  · Generator: Read + Write + Edit + Bash                    │
-│  · Evaluator: Read only (Write/Edit disallowed)             │
-│  · 目的：基于研究结果执行实际操作                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**设计理由**：
-
-- 强制 Agent 在行动前先"看懂"任务，避免"一上来就动手"的浅层执行
-- Research 阶段的工具受限防止 Agent 跳过思考直接修改文件
-- 两阶段之间的上下文传递保证了研究成果被利用
-
-### 4.3 Compact Summary 机制
+### 4.2 Compact Summary 机制
 
 同一 Sprint 内的多个 Feature 需要上下文传递，但完整 session 上下文会线性增长。Compact Summary 解决这个问题：
 
@@ -223,6 +206,7 @@ interface Sprint {
   sprint: number                    // Sprint 序号
   task: string                      // 原始任务描述
   phase: 'negotiate' | 'implement' | 'review' | 'done'
+  inquiryPath?: string              // 指向 .harness/inquiry/task-<ts>.md 的完整讨论
   reviewDimensions: ReviewDimension[]  // M 个评审维度
   context?: string                  // 任务上下文
   previousReview?: string           // 上一轮的评审反馈
@@ -274,10 +258,13 @@ Harness 实现了多层级联控制（Cascade Control）：
 
 | 层级 | 时间尺度 | 机制 | 处理的问题 |
 |-----|---------|------|-----------|
+| **L0** | 启动时 | Inquiry 对话（Interrogator ↔ 人） | 意图澄清、XY 问题识别、隐含假设暴露 |
 | **L1** | 秒级 | 确定性检查（编译、测试、Lint） | 语法错误、类型不匹配、基础功能 |
 | **L2** | 分钟级 | N+M 并行审查 | 设计合理性、代码质量、功能完整性 |
 | **L3** | Sprint 级 | Holistic Review | 架构一致性、跨功能问题 |
 | **L4** | 多 Sprint | previousReview 传递 | 累积反馈、持续改进 |
+
+L0 产出的 inquiry transcript 是所有后续层级的**参考信号**——当某层检测到偏离时，它定义了"偏离的是什么"。其他层是**误差信号**，L0 是**参考信号**。
 
 ### L1 检查示例
 
@@ -332,20 +319,25 @@ Generator                              Evaluator
 
 ### 7.2 Evaluator 的审查标准（核心）
 
-Evaluator 最重要的判断标准是 **研究深度**：
+Evaluator 最重要的判断标准是 **证据深度**——contract 本身是否暴露出对真实源码的深度参与痕迹：
 
-> "Could someone who never opened a single file have written this?"
+> "If I hand this contract to a new engineer, can they locate every claim it makes inside the source?"
 
-**浅层研究的信号（拒绝）**：
+注意这里审查的是**结果**（contract 里的证据）而非**过程**（Generator 怎么研究的）。无论 Generator 内部如何思考，contract 必须可被独立验证。
+
+**弱证据的信号（拒绝）**：
 - 通用的功能名如 "Core Module", "Utility Functions"
 - 不引用实际源代码内容的 prompt
-- 空的或通用的 background 字段
+- 空的或只是复述任务的 background 字段
 - 只检查文件存在性而不检查内容正确性的 checks
 
-**深度研究的信号（接受）**：
+**强证据的信号（接受）**：
 - 功能名引用了源代码中实际存在的组件
-- Prompt 引用了 Generator 实际读取的文件、函数、结构
-- Background 基于真实理解解释了组件关系
+- Prompt 引用了具体的文件、函数、数据结构、现有模式
+- Background 解释了组件关系，包含浅层阅读者无法产出的细节
+- Checks 验证的是内容/行为，而非仅存在性
+
+**独立验证**：挑 2-3 条 contract 声明，去源码中核对——蒸发的声明即为拒绝信号。
 
 ### 7.3 允许 Generator 反驳
 
@@ -407,33 +399,40 @@ harness-demo/
 │   ├── onboard.ts           # 交互式配置向导
 │   └── ui.ts                # 终端输出格式化
 ├── prompts/
+│   ├── inquire/             # Inquiry 阶段提示词
+│   │   └── interrogator.md
 │   ├── negotiate/           # 协商阶段提示词
-│   │   ├── generator-research.md
-│   │   ├── generator-execute.md
-│   │   ├── generator-revise-research.md
-│   │   ├── generator-revise-execute.md
-│   │   ├── evaluator-research.md
-│   │   └── evaluator-execute.md
+│   │   ├── generator.md
+│   │   ├── generator-revise.md
+│   │   └── evaluator.md
 │   ├── implement/           # 实现阶段提示词
-│   │   ├── generator-research.md
-│   │   ├── generator-execute.md
-│   │   ├── generator-retry-research.md
-│   │   └── generator-retry-execute.md
+│   │   ├── generator.md
+│   │   ├── generator-retry.md
+│   │   └── generator-summary.md
 │   └── review/              # 审查阶段提示词
-│       ├── reviewer-research.md
-│       ├── reviewer-execute.md
-│       ├── holistic-research.md
-│       └── holistic-execute.md
+│       ├── reviewer.md
+│       └── holistic.md
 ├── control/
-│   ├── golden-principles.md # 项目开发原则
-│   ├── contract-format.md   # Sprint 合约格式说明
-│   └── research-principles.md
+│   ├── golden-principles.md # 项目开发与研究原则
+│   └── contract-format.md   # Sprint 合约格式说明
 └── .harness/
-    └── progress/
-        ├── sprint-1.json
-        ├── sprint-2.json
-        └── ...
+    ├── inquiry/             # 所有 discovery 产物，永不删
+    │   └── task-<ts>/
+    │       ├── session.jsonl  # 全量 agent session（每行一条 message）
+    │       └── spec.md        # Interrogator 产出的压缩 markdown spec
+    ├── pending/             # 已 discover 待 execute
+    │   └── task-<ts>.json   # { inquiryDir, specPath, sessionPath, ... }
+    ├── progress/            # 正在 execute 的 sprint 文件
+    │   ├── sprint-1.json
+    │   └── ...
+    └── completed/           # execute 完成归档
+        └── task-<ts>/
+            ├── spec.md (copy)
+            ├── session.jsonl (copy)
+            └── sprint-*.json
 ```
+
+`src/inquire.ts` 管理 Phase -1 的对话循环和 pending/completed 生命周期。每个 task 对应一个 `inquiry/task-<ts>/` 目录，包含 **session.jsonl**（原始流）和 **spec.md**（压缩叙述）。
 
 ---
 
@@ -471,17 +470,45 @@ const approved = reviews.length > 0 && reviews.every((r) => r.status === 'pass')
 - 不可被 Agent "说服"绕过
 - 清晰的退出条件
 
-### 10.4 为什么实现两阶段（Research → Execute）模式？
+### 10.4 为什么剥离 Research → Execute 两阶段模式？
 
-单阶段执行的问题：
-- Agent 倾向于跳过思考直接动手
-- 浅层研究导致低质量输出
-- 无法强制 Agent "先看再做"
+历史上本项目曾为每次 Agent 调用拆出独立的 research 和 execute 两阶段，研究阶段工具受限（只读），完成后再切入执行阶段。设计理由有三：
 
-两阶段模式的优势：
-- Research 阶段工具受限（只读），强制深度理解
-- Execute 阶段有 Research 上下文，决策更准确
-- 可审计：可以检查 Agent 的研究质量
+- 强制 Agent 在行动前先"看懂"任务，避免浅层执行
+- Execute 阶段复用 Research 的上下文积累
+- 研究质量可审计（审查研究过程本身）
+
+随着模型 agentic 能力的提升，这三条都显出了补偿性本质——它们约束的是**模型内部的思考过程**，而非可外部验证的**结果、角色或状态**。强模型天然会先探索再动手，两段 session 切换反而切断了"边研究边实验边调整"的自然流。可审计也可以从"审过程"改为"审结果证据"——contract 里有无具体文件/函数/代码引用。
+
+本项目在 2026-04 剥离两阶段，保留所有控制论结构性约束（权限隔离、机械化 approved、N+M 审查、状态外部化、三层阻尼），并把 Evaluator 的"研究深度"维度改写为"证据深度"（见 7.2）。这是 12.3 "剥离不再需要的约束" 承诺的首次兑现。
+
+### 10.5 为什么 Inquiry 产出双层 reference signal？
+
+Phase -1 的 inquiry 对话产出**两层**参考信号：
+
+- **Spec (markdown)**：Interrogator 在讨论收敛后产出的一段压缩叙述。**内联注入**每个下游 phase 的 prompt。它是日常消费的、简洁的"任务真实意图"。
+- **Session (jsonl)**：Interrogator 对话的完整 agent session（每条 message 一行 JSON）。**不内联**，只以 pointer 形式挂在 prompt 里。Agent 遇到歧义、觉得 spec 模糊时才 Read。
+
+**双轨的理由**：任何单层方案都有致命缺陷。
+
+- 只给 spec（单层压缩）：丢失"被拒绝的方向"的负空间信息，后续 agent 无法回溯判据。压缩即漂移之母。
+- 只给 session（单层原始）：每次都要解析整场对话，token 爆炸，prompt 稀释注意力。
+
+双层同时保留：spec 提供**可用性**（不会让 agent prompt 爆炸），session 保障**防漂移**（ground truth 未丢失）。
+
+**Spec 的产出规则**：Interrogator 在用户说 "done" 后，被单独调一次（带 SPEC_SCHEMA 的 structured output），由 Interrogator 自己写 markdown spec——这是唯一允许压缩的时刻。讨论过程中 Interrogator 永远不总结（硬规则写进它的 prompt）。
+
+**关键约束**：spec 由 Interrogator 一次性产出后**永不修改**。任何后续修正都通过新 inquiry（新对话、新 spec、新 session），不覆盖旧的。旧 inquiry 目录永久保留——它们是项目的思想化石层。
+
+### 10.6 为什么 Inquiry 和 Execute 分两阶段？
+
+Inquiry 需要 live 人机对话；Execute 要求 fire-and-forget 自主执行。两者的运行模式根本不同。
+
+分开的好处：
+- **保留工具性**：`harness execute` 依然可以放 CI、夜间运行、长任务托管
+- **discover 完可中断**：用户 discover 后可以去睡觉，`execute` 任何时候再跑
+- **多任务队列**：discover 多个 task 产生多个 pending，按需 execute
+- **默认强 discovery**：`harness "task"` 默认走 discover + execute；opt-out 需要显式 `execute --direct`
 
 ---
 
@@ -493,10 +520,20 @@ const approved = reviews.length > 0 && reviews.every((r) => r.status === 'pass')
 # 首次配置
 harness onboard
 
-# 启动新任务
+# 启动新任务（默认 discover + execute，语法糖）
 harness "实现一个用户认证系统，支持邮箱密码登录和 JWT"
 
-# 断点恢复（从上次中断处继续）
+# 只做 discovery（产出 pending，不立即 execute）
+harness discover "实现用户认证"
+
+# 只 execute（读最新 pending 或指定 task-id）
+harness execute
+harness execute task-1730000000
+
+# 熟练用户：跳过 discovery（opt-out）
+harness execute --direct "实现一个明确无歧义的小功能"
+
+# 断点恢复或列 pending
 harness
 
 # 重置所有进度
@@ -508,6 +545,25 @@ npm run reset
 ```
 $ harness "Implement a CLI todo app with add, list, and complete commands"
 
+  ══ INQUIRY ══
+
+  Discuss with the Interrogator to clarify what this task really means.
+  Type "done" when you are ready to begin execution.
+
+  ── Interrogator ──
+    > Who will use this CLI — yourself, a team, or public distribution?
+  You: just me, local use
+
+  ── Interrogator ──
+    > Should completed todos persist across invocations, or is in-memory fine?
+  You: persist, JSON file
+
+  ── Interrogator ──
+    > What counts as failure here — corrupt JSON, ambiguous commands, or something else?
+  You: done
+
+  ✓ Inquiry saved: .harness/inquiry/task-1730000000.md
+
   ─── Harness: Generator ↔ Evaluator ───
 
   ━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -517,15 +573,10 @@ $ harness "Implement a CLI todo app with add, list, and complete commands"
   ══ NEGOTIATE — Sprint 1 ══
 
   ── Generator ──
-    [research mode]
-    ...researching task...
-    [execute mode]
     ...drafting contract...
 
   ── Evaluator ──
-    [research mode]
     ...reviewing contract...
-    [execute mode]
 
   ┌─────────────────────────────────────────────┐
   │ Review: 3 features                          │
@@ -545,8 +596,7 @@ $ harness "Implement a CLI todo app with add, list, and complete commands"
   ══ IMPLEMENT — Sprint 1 ══  3 features
 
   [1/3] todo-add
-    [research mode] ...
-    [execute mode] ...
+    ...implementing...
     $ npm test -- todo-add
     ✓ 2 checks passed
     L1 PASS
@@ -627,6 +677,8 @@ $ harness "Implement a CLI todo app with add, list, and complete commands"
    - 每个 Harness 组件编码了一个关于模型局限性的假设
    - 随着模型进化，自动检验和调整这些假设
    - 剥离不再需要的约束，为新能力腾出空间
+   - ✓ 2026-04：剥离 research-execute 两阶段模式（首个自我剥离案例，见 10.4）
+   - ✓ 2026-04：新增 Inquiry Phase 和 L0 反馈层（建立 reference signal，见 10.5/10.6）
 
 ---
 
@@ -692,13 +744,13 @@ rm .harness/progress/sprint-N.json && harness "original task"
 | 执行器 | Actuator | Generator's Write/Edit |
 | 反馈回路 | Feedback Loop | Sprint Cycle |
 | 负反馈 | Negative Feedback | needs-revision → retry |
-| 参考信号 | Reference Signal | Task Description |
+| 参考信号 | Reference Signal | Inquiry Spec（压缩 markdown）+ Session.jsonl（未压缩原始流）|
 | 误差信号 | Error Signal | Review Comments |
 | 开环控制 | Open-loop Control | 单次 LLM 调用无反馈 |
 | 闭环控制 | Closed-loop Control | Harness 的 Sprint 循环 |
-| 级联控制 | Cascade Control | L1 → L2 → L3 → L4 |
+| 级联控制 | Cascade Control | L0 → L1 → L2 → L3 → L4 |
 | 阻尼 | Damping | maxL1Retries / maxNegotiateRounds |
 
 ---
 
-*本文档随项目演进持续更新。最后更新：2026-04-18*
+*本文档随项目演进持续更新。最后更新：2026-04-19*

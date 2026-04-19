@@ -17,6 +17,11 @@ const AGENT_CONFIG: Record<Role, Record<string, any>> = {
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead'],
     disallowedTools: ['Write', 'Edit', 'TodoWrite'],
   },
+  Interrogator: {
+    model: config.model,
+    allowedTools: ['Read', 'Glob', 'Grep'],
+    disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],
+  },
 }
 
 // ─── Prompt loader ───
