@@ -43,10 +43,11 @@ function generateConfig(custom: NonNullable<HarnessConfig['customModel']>, model
   // Claude Code 会请求多个模型名，全部映射到同一个后端
   const allModels = [
     model,
+    'claude-opus-4-7',
+    'claude-opus-4-6',
     'claude-sonnet-4-6',
     'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5-20251001',
-    'claude-opus-4-6',
   ]
   const uniqueModels = [...new Set(allModels)]
 
