@@ -28,6 +28,30 @@ export function progressBar(done: number, total: number, width = 20): string {
   return `[${green('█'.repeat(filled))}${dim('░'.repeat(width - filled))}]`
 }
 
+/**
+ * 启动一个行内 spinner，返回停止函数。
+ * 停止时清除当前行。
+ */
+export function startSpinner(label: string, color: (s: string) => string = cyan): () => void {
+  const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+  let i = 0
+  const isTTY = Boolean((process.stdout as any).isTTY)
+  if (!isTTY) {
+    // 非 TTY（比如 pipe/CI）不动画，只打一次标签
+    console.log(`    ${dim(label)}`)
+    return () => {}
+  }
+  process.stdout.write('\x1b[?25l') // hide cursor
+  const interval = setInterval(() => {
+    process.stdout.write(`\r    ${color(frames[i])} ${dim(label)}`)
+    i = (i + 1) % frames.length
+  }, 80)
+  return () => {
+    clearInterval(interval)
+    process.stdout.write('\r\x1b[K\x1b[?25h') // clear line + restore cursor
+  }
+}
+
 export function logTool(name: string, input: any): void {
   const fmts: Record<string, () => string> = {
     Read:  () => `${cyan('Read')}  ${shortPath(input?.file_path)}`,

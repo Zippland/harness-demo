@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { resolve } from 'path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { config, WORK_DIR, INQUIRY_DIR, PENDING_DIR, COMPLETED_DIR, PROGRESS_DIR, PROMPTS_DIR } from './config.js'
-import { bold, dim, green, cyan, yellow, red } from './ui.js'
+import { bold, dim, green, cyan, yellow, red, startSpinner } from './ui.js'
 
 export interface PendingTask {
   taskId: string
@@ -160,7 +160,18 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
 
   while (true) {
     console.log(`\n  ${dim('──')} ${cyan('Interrogator')} ${dim('──')}`)
-    const { sessionId: newId, text, structured } = await runInterrogatorTurn(userMessage, sessionId, TURN_SCHEMA, sessionLog)
+    const stopSpinner = startSpinner('thinking...')
+    let newId: string
+    let text: string
+    let structured: any
+    try {
+      const turn = await runInterrogatorTurn(userMessage, sessionId, TURN_SCHEMA, sessionLog)
+      newId = turn.sessionId
+      text = turn.text
+      structured = turn.structured
+    } finally {
+      stopSpinner()
+    }
     sessionId = newId
     const display = (structured?.message ?? text).trim()
     for (const line of display.split('\n')) console.log(`    ${cyan('>')} ${line}`)
@@ -171,7 +182,7 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
     }
 
     const reply = (await ask('\n  You (or /done): ')).trim()
-    if (reply === '/done' || reply.toLowerCase() === '/done') {
+    if (reply.toLowerCase() === '/done') {
       console.log(dim('  User force-ended the discussion.'))
       break
     }
@@ -181,15 +192,17 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   rl.close()
 
   // 收敛后：让 Interrogator 写 spec
-  console.log(dim('\n  Drafting task spec...'))
   writeEvent(sessionLog, { role: 'system', kind: 'spec_request', content: SPEC_PROMPT })
 
+  const stopSpecSpinner = startSpinner('drafting task spec...')
   let spec = ''
   try {
     const { structured } = await runInterrogatorTurn(SPEC_PROMPT, sessionId, SPEC_SCHEMA, sessionLog, 'spec')
     spec = structured?.spec ?? ''
   } catch (e: any) {
     console.log(red(`    Spec draft failed: ${e?.message ?? e}`))
+  } finally {
+    stopSpecSpinner()
   }
 
   if (!spec) {
