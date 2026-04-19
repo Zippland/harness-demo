@@ -1,7 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { config, WORK_DIR, TOOL_DIR, PROMPTS_DIR } from './config.js'
+import { config, WORK_DIR, PROMPTS_DIR } from './config.js'
 import { dim, cyan, yellow, red, ROLE_STYLE, logTool } from './ui.js'
 import type { Role } from './types.js'
 
@@ -101,61 +101,4 @@ export async function runAgent(
   const fullResponse = joined.length > 5000 ? joined.slice(-5000) : joined
 
   return { sessionId, result: fullResponse, structured }
-}
-
-// ─── Research → Execute 两阶段 ───
-
-export const RESEARCH_TOOLS = {
-  allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead'],
-  disallowedTools: ['Write', 'Edit'],
-}
-
-export const RESEARCH_COMPLETE_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      status: { type: 'string', enum: ['research_complete'], description: 'Output this when you have finished your research and are ready to execute.' },
-    },
-    required: ['status'],
-  },
-}
-
-/**
- * 两阶段模式：research → execute
- *
- * 消息序列：
- *   user msg 1: researchPrompt（含上下文 + 调研指令）
- *   → agent 调研（只有 Read 类工具）
- *   → agent 输出 { status: "research_complete" } 主动移交
- *   user msg 2: executePrompt（执行指令）
- *   → agent 执行（完整工具）
- */
-export async function runWithResearch(
-  role: Role,
-  researchPrompt: string,
-  executePrompt: string,
-  opts: { outputFormat?: any; resume?: string } = {},
-): Promise<{ sessionId: string; result: string; structured?: any }> {
-  const researchPrinciples = readFileSync(resolve(TOOL_DIR, 'control/research-principles.md'), 'utf-8')
-
-  const color = ROLE_STYLE[role]
-  console.log(`\n  ${dim('──')} ${color(role)} ${dim('──')}`)
-  console.log(dim('    [research mode]'))
-
-  const research = await runAgent(role, `${researchPrompt}\n\n<RESEARCH_PRINCIPLES>\n\n${researchPrinciples}\n\n</RESEARCH_PRINCIPLES>`, {
-    toolOverrides: RESEARCH_TOOLS,
-    outputFormat: RESEARCH_COMPLETE_SCHEMA,
-    silent: true,
-    ...(opts.resume ? { resume: opts.resume } : {}),
-  })
-
-  // 同一 agent，切换模式
-  console.log(dim('    [execute mode]'))
-  return runAgent(role, executePrompt, {
-    resume: research.sessionId,
-    toolOverrides: {},
-    silent: true,
-    outputFormat: opts.outputFormat,
-  })
 }

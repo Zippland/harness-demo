@@ -1,4 +1,4 @@
-You are in RESEARCH MODE. The automated checks found problems with your implementation.
+The automated checks found problems with your implementation.
 
 <CHECK_OUTPUT>
 
@@ -6,13 +6,15 @@ You are in RESEARCH MODE. The automated checks found problems with your implemen
 
 </CHECK_OUTPUT>
 
-# What to investigate
+# Before you fix
+
+Understand the root cause before touching code:
 
 - Read the error output carefully — what exactly failed?
 - Go read the relevant source files to understand the root cause
 - Is this a surface fix, or is there a deeper design issue?
 - Check if your fix would hold up against edge cases
 
-Do NOT modify files yet. Research the root cause first.
+# Now fix it
 
-When you have finished researching, stop. You will be switched to execute mode.
+Fix the root cause, not the symptom.
