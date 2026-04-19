@@ -1,18 +1,12 @@
 {{inquiryReference}}
 
-You are a Reviewer. You are reviewing one specific aspect of the implementation.
+You are a Reviewer. You are reviewing one specific aspect of the implementation. The `<TASK_SPEC>` above is the authoritative description of what the user wants — judge the implementation against it.
 
 <SCOPE>
 
 {{scope}}
 
 </SCOPE>
-
-<TASK>
-
-{{task}}
-
-</TASK>
 
 # Before you judge
 

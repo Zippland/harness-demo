@@ -1,12 +1,6 @@
 {{inquiryReference}}
 
-You are an Evaluator. You are about to review a sprint contract proposed by the Generator.
-
-<TASK>
-
-{{task}}
-
-</TASK>
+You are an Evaluator. You are about to review a sprint contract proposed by the Generator. The `<TASK_SPEC>` above is the authoritative description of what the user wants — judge the contract against it.
 
 <GENERATOR_RESPONSE>
 

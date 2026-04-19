@@ -18,7 +18,7 @@ import { config, PROGRESS_DIR } from './src/config.js'
 import { sprintPath, loadSprint, currentSprintNumber, updateSprintState } from './src/sprint.js'
 import { startLiteLLM } from './src/litellm.js'
 import { onboard } from './src/onboard.js'
-import { inquire, listPending, consumePending, archiveTask, type PendingTask } from './src/inquire.js'
+import { inquire, createDirectPending, listPending, consumePending, archiveTask, type PendingTask } from './src/inquire.js'
 import { negotiate, implement, reviewAll, holisticReview } from './src/phases.js'
 import { dim, bold, green, yellow, red } from './src/ui.js'
 
@@ -67,14 +67,7 @@ async function main(): Promise<void> {
     if (args[1] === '--direct') {
       const task = args.slice(2).join(' ').trim()
       if (!task) { usage(); process.exit(1) }
-      const pending: PendingTask = {
-        taskId: `direct-${Date.now()}`,
-        originalTask: task,
-        inquiryDir: '',
-        specPath: '',
-        sessionPath: '',
-        createdAt: new Date().toISOString(),
-      }
+      const pending = createDirectPending(task)
       await runExecution(pending)
       return
     }
@@ -122,7 +115,6 @@ async function main(): Promise<void> {
 async function runExecution(pending: PendingTask): Promise<void> {
   console.log(dim('\n  ─── Harness: Generator ↔ Evaluator ───\n'))
 
-  const task = pending.originalTask
   const inquiryPath = pending.inquiryDir || undefined
 
   let startSprint = 1
@@ -133,13 +125,13 @@ async function runExecution(pending: PendingTask): Promise<void> {
     console.log(bold(`       Sprint ${sprintNum}`))
     console.log(bold(`  ━━━━━━━━━━━━━━━━━━━━━━━━━\n`))
 
-    await negotiate(task, sprintNum, previousReview, inquiryPath)
+    await negotiate(sprintNum, previousReview, inquiryPath)
     updateSprintState(sprintNum, 'implement')
 
     await implement(sprintNum)
     updateSprintState(sprintNum, 'review')
 
-    const { review, collectedReview } = await reviewAll(task, sprintNum)
+    const { review, collectedReview } = await reviewAll(sprintNum)
 
     if (!review) {
       console.log(yellow('    Review parse failed, re-running review...'))
@@ -149,7 +141,7 @@ async function runExecution(pending: PendingTask): Promise<void> {
     if (review.approved) {
       updateSprintState(sprintNum, 'done')
 
-      const holistic = await holisticReview(task, inquiryPath)
+      const holistic = await holisticReview(inquiryPath)
 
       if (holistic.pass) {
         let totalFeatures = 0
@@ -182,7 +174,6 @@ async function resumeExecution(existingSprint: number): Promise<void> {
   console.log(dim('\n  ─── Harness: Generator ↔ Evaluator (resume) ───\n'))
 
   const lastSprint = loadSprint(existingSprint)
-  const task = lastSprint.task
   const inquiryPath = lastSprint.inquiryPath || undefined
   let startSprint = existingSprint
   let previousReview: string | undefined = lastSprint.previousReview
@@ -203,7 +194,7 @@ async function resumeExecution(existingSprint: number): Promise<void> {
       : null
 
     if (!resumePhase || resumePhase === 'negotiate') {
-      await negotiate(task, sprintNum, previousReview, inquiryPath)
+      await negotiate(sprintNum, previousReview, inquiryPath)
       updateSprintState(sprintNum, 'implement')
     }
 
@@ -212,7 +203,7 @@ async function resumeExecution(existingSprint: number): Promise<void> {
       updateSprintState(sprintNum, 'review')
     }
 
-    const { review, collectedReview } = await reviewAll(task, sprintNum)
+    const { review, collectedReview } = await reviewAll(sprintNum)
 
     if (!review) {
       console.log(yellow('    Review parse failed, re-running review...'))
@@ -222,7 +213,7 @@ async function resumeExecution(existingSprint: number): Promise<void> {
     if (review.approved) {
       updateSprintState(sprintNum, 'done')
 
-      const holistic = await holisticReview(task, inquiryPath)
+      const holistic = await holisticReview(inquiryPath)
 
       if (holistic.pass) {
         let totalFeatures = 0

@@ -120,14 +120,14 @@ async function runPool<T>(fns: (() => Promise<T>)[], concurrency: number): Promi
 // Phase 0: negotiate
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function negotiate(task: string, sprintNum: number, previousReview?: string, inquiryPath?: string): Promise<void> {
+export async function negotiate(sprintNum: number, previousReview?: string, inquiryPath?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const contractFormat = readFileSync(resolve(TOOL_DIR, 'control/contract-format.md'), 'utf-8')
   const sprintFile = sprintPath(sprintNum)
   const inquiryReference = referenceFromInquiryDir(inquiryPath)
 
-  const contractVars = { task, principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum), inquiryReference }
+  const contractVars = { principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum), inquiryReference }
 
   let gen: { sessionId: string; result: string; structured?: any }
 
@@ -183,7 +183,7 @@ export async function negotiate(task: string, sprintNum: number, previousReview?
 
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
     const evalPrompt = loadPrompt('negotiate/evaluator', {
-      task, sprintFile, generatorResponse: generatorSaid, principles, inquiryReference,
+      sprintFile, generatorResponse: generatorSaid, principles, inquiryReference,
     })
     if (evalSessionId) {
       console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim('──')}`)
@@ -315,7 +315,7 @@ export async function implement(sprintNum: number): Promise<void> {
 // Phase 2: reviewAll (N+M parallel)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function reviewAll(task: string, sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
+export async function reviewAll(sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
   const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
@@ -328,7 +328,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
       const scope = `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}`
       const { structured } = await runAgent('Evaluator',
-        loadPrompt('review/reviewer', { task, scope, inquiryReference }),
+        loadPrompt('review/reviewer', { scope, inquiryReference }),
         { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
       )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
@@ -341,7 +341,7 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
       console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
       const scope = `**Dimension: ${dimen.name}**\n${dimen.description}\n\nGolden Principles:\n${principles}`
       const { structured } = await runAgent('Evaluator',
-        loadPrompt('review/reviewer', { task, scope, inquiryReference }),
+        loadPrompt('review/reviewer', { scope, inquiryReference }),
         { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
       )
       const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
@@ -381,12 +381,12 @@ export async function reviewAll(task: string, sprintNum: number): Promise<{ revi
 // Phase 3: holisticReview
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function holisticReview(task: string, inquiryPath?: string): Promise<{ pass: boolean; feedback: string }> {
+export async function holisticReview(inquiryPath?: string): Promise<{ pass: boolean; feedback: string }> {
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
   const inquiryReference = referenceFromInquiryDir(inquiryPath)
 
   const { structured } = await runAgent('Evaluator',
-    loadPrompt('review/holistic', { task, inquiryReference }),
+    loadPrompt('review/holistic', { inquiryReference }),
     { outputFormat: HOLISTIC_SCHEMA },
   )
 
