@@ -36,7 +36,7 @@ export function loadPrompt(name: string, vars: Record<string, string>): string {
 export async function runAgent(
   role: Role,
   prompt: string,
-  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any>; silent?: boolean } = {},
+  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any>; silent?: boolean; _retryCount?: number } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
   if (!opts.silent) {
     const color = ROLE_STYLE[role]
@@ -98,7 +98,21 @@ export async function runAgent(
       return runAgent(role, prompt, opts)
     }
 
-    console.log(`    ${red('!')} ${dim(`Agent error: ${errMsg.slice(0, 100)}`)}`)
+    // SDK 子进程非 0 退出：瞬态重试 1 次后再降级
+    if (errMsg.includes('exited with code') || errMsg.includes('process exited')) {
+      const retry = (opts._retryCount ?? 0) + 1
+      if (retry <= 1) {
+        console.log(`    ${yellow('!')} ${dim(`SDK subprocess exit (attempt ${retry}/1). Retrying in 3s...`)}`)
+        await new Promise((r) => setTimeout(r, 3_000))
+        return runAgent(role, prompt, { ...opts, _retryCount: retry })
+      }
+    }
+
+    // 非白名单错误（或已用尽重试）：打印完整错误 + stack 供调试
+    console.log(`    ${red('!')} Agent error (${role}): ${errMsg}`)
+    if (e?.stack && process.env.HARNESS_DEBUG) {
+      console.log(dim(e.stack))
+    }
     return { sessionId, result: `[Agent error: ${errMsg}]`, structured: undefined }
   }
 

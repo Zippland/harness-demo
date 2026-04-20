@@ -20,11 +20,15 @@ const TURN_SCHEMA = {
     properties: {
       message: {
         type: 'string',
-        description: 'What you want to say to the user this turn.',
+        description: 'What you want to say to the user this turn. Keep it natural — this is a conversation.',
       },
       ready_for_spec: {
         type: 'boolean',
-        description: 'Set true only when enough has surfaced to write a useful spec. The discussion will end immediately — use your judgment. Default false.',
+        description: 'Set true ONLY when the discussion has surfaced enough AND you have filled in the spec field below in this same response. When true, the discussion ends immediately. Default false.',
+      },
+      spec: {
+        type: 'string',
+        description: 'The final task spec as a markdown document. Fill this ONLY when ready_for_spec is true — then your message is your closing line to the user, and this spec is the authoritative artifact downstream agents will build against. Leave empty/omit otherwise.',
       },
     },
     required: ['message', 'ready_for_spec'],
@@ -157,6 +161,8 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   const firstPrompt = `${roleText}\n\n${originalTask}`
   let userMessage = firstPrompt
   let sessionId: string | undefined
+  let spec = ''
+  let forceDone = false
 
   while (true) {
     console.log(`\n  ${dim('──')} ${cyan('Interrogator')} ${dim('──')}`)
@@ -177,13 +183,15 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
     for (const line of display.split('\n')) console.log(`    ${cyan('>')} ${line}`)
 
     if (structured?.ready_for_spec === true) {
-      console.log(dim('\n  Interrogator indicated enough has surfaced.'))
+      spec = (structured?.spec ?? '').trim()
+      console.log(dim('\n  Interrogator closed the discussion and wrote the spec.'))
       break
     }
 
     const reply = (await ask('\n  You (or /done): ')).trim()
     if (reply.toLowerCase() === '/done') {
       console.log(dim('  User force-ended the discussion.'))
+      forceDone = true
       break
     }
     writeEvent(sessionLog, { role: 'user', content: reply })
@@ -191,18 +199,20 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   }
   rl.close()
 
-  // 收敛后：让 Interrogator 写 spec
-  writeEvent(sessionLog, { role: 'system', kind: 'spec_request', content: SPEC_PROMPT })
-
-  const stopSpecSpinner = startSpinner('drafting task spec...')
-  let spec = ''
-  try {
-    const { structured } = await runInterrogatorTurn(SPEC_PROMPT, sessionId, SPEC_SCHEMA, sessionLog, 'spec')
-    spec = structured?.spec ?? ''
-  } catch (e: any) {
-    console.log(red(`    Spec draft failed: ${e?.message ?? e}`))
-  } finally {
-    stopSpecSpinner()
+  // 如果是 /done 强制结束，或 Interrogator 标了 ready 但没给 spec，补调一次
+  if (!spec) {
+    const reason = forceDone ? 'user /done' : 'Interrogator marked ready without spec'
+    console.log(dim(`  Drafting spec (${reason})...`))
+    writeEvent(sessionLog, { role: 'system', kind: 'spec_request', content: SPEC_PROMPT })
+    const stopSpecSpinner = startSpinner('drafting task spec...')
+    try {
+      const { structured } = await runInterrogatorTurn(SPEC_PROMPT, sessionId, SPEC_SCHEMA, sessionLog, 'spec')
+      spec = (structured?.spec ?? '').trim()
+    } catch (e: any) {
+      console.log(red(`    Spec draft failed: ${e?.message ?? e}`))
+    } finally {
+      stopSpecSpinner()
+    }
   }
 
   if (!spec) {
