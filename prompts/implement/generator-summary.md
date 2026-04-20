@@ -1,4 +1,4 @@
-You are a Summarizer. Generate a compact summary (max 300 chars) of the current feature for subsequent features in this sprint.
+You are a Summarizer. Generate a compact summary of the current feature for subsequent features in this sprint.
 
 {{previousSummaries}}
 
