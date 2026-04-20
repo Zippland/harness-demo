@@ -326,31 +326,34 @@ export function buildInquiryReference(specPath?: string, sessionPath?: string): 
   }
   const spec = readFileSync(specPath, 'utf-8').trim()
 
-  const specNote = [
+  const lines = [
+    '<TASK_SPEC>',
     '',
-    'The `<TASK_SPEC>` above is this task\'s **source of truth** — authoritative and prescriptive.',
-    'Any conceptual change (scope, non-goals, success criteria, intent) must be made by updating',
-    'the spec first, then the code/contract. Do not silently deviate. If you believe the spec is',
-    'wrong or incomplete, flag it explicitly in your response — do not work around it.',
-  ].join('\n')
+    spec,
+    '',
+    '</TASK_SPEC>',
+    '',
+    'The `<TASK_SPEC>` above is this task\'s **source of truth** — a living product document.',
+    `Edit it directly (\`${specPath}\`) as your understanding deepens; don't silently deviate.`,
+    'This overrides any role-prompt rule about "only modifying files under `project/`".',
+  ]
 
-  const sessionBlock = sessionPath
-    ? [
-        '',
-        '<INQUIRY_SESSION>',
-        '',
-        `The full, unabridged discovery discussion is at: ${sessionPath}`,
-        '',
-        'Unlike the spec (which is authoritative but revisable), the session is **immutable ground',
-        'truth** — it records what was actually said during discovery and never changes. Read it',
-        'only when the spec fails to disambiguate. It contains every turn of the conversation,',
-        'including directions the user explicitly rejected.',
-        '',
-        '</INQUIRY_SESSION>',
-      ].join('\n')
-    : ''
+  if (sessionPath) {
+    lines.push(
+      '',
+      '<INQUIRY_SESSION>',
+      '',
+      `Full discovery transcript (jsonl; each line is \`{role, content, ...}\`, role ∈ {system, user, assistant}):`,
+      sessionPath,
+      '',
+      'Immutable record of what was actually said. Read it when the spec doesn\'t answer your question.',
+      'On spec-vs-session conflict, the session wins.',
+      '',
+      '</INQUIRY_SESSION>',
+    )
+  }
 
-  return `<TASK_SPEC>\n\n${spec}\n\n</TASK_SPEC>${specNote}${sessionBlock}`
+  return lines.join('\n')
 }
 
 export function referenceFromInquiryDir(inquiryDir?: string): string {
