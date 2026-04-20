@@ -116,6 +116,32 @@ async function runPool<T>(fns: (() => Promise<T>)[], concurrency: number): Promi
   return results
 }
 
+/**
+ * runAgent 的封装：期望产出 structured output。
+ * 如果首轮没产出，resume session 提示模型重试。最多 maxRetries 次后降级。
+ */
+async function runAgentExpectStructured(
+  role: 'Generator' | 'Evaluator' | 'Interrogator',
+  prompt: string,
+  schema: any,
+  opts: { silent?: boolean; maxRetries?: number; label?: string } = {},
+): Promise<{ sessionId: string; structured?: any; result: string }> {
+  const maxRetries = opts.maxRetries ?? 2
+  const label = opts.label ?? role
+  let turn = await runAgent(role, prompt, { outputFormat: schema, silent: opts.silent })
+  if (turn.structured) return turn
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`    ${yellow('!')} ${dim(`${label}: no structured output, retrying (${attempt}/${maxRetries})...`)}`)
+    turn = await runAgent(role,
+      'Your previous response did not include the required structured output. Please respond again using the structured JSON schema — just the structured payload, no prose wrapping.',
+      { resume: turn.sessionId, outputFormat: schema, silent: opts.silent },
+    )
+    if (turn.structured) return turn
+  }
+  return turn
+}
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Phase 0: negotiate
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -327,11 +353,12 @@ export async function reviewAll(sprintNum: number): Promise<{ review: ReviewResu
     reviewFns.push(() => (async () => {
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
       const scope = `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}`
-      const { structured } = await runAgent('Evaluator',
+      const { structured } = await runAgentExpectStructured('Evaluator',
         loadPrompt('review/reviewer', { scope, inquiryReference }),
-        { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
+        SINGLE_REVIEW_SCHEMA,
+        { silent: true, label: `feature/${feature.id}` },
       )
-      const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+      const r = structured ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce structured output after retries' }
       return { id: feature.id, type: 'feature' as const, status: r.status, score: r.score, comment: r.comment }
     })())
   }
@@ -340,11 +367,12 @@ export async function reviewAll(sprintNum: number): Promise<{ review: ReviewResu
     reviewFns.push(() => (async () => {
       console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
       const scope = `**Dimension: ${dimen.name}**\n${dimen.description}\n\nGolden Principles:\n${principles}`
-      const { structured } = await runAgent('Evaluator',
+      const { structured } = await runAgentExpectStructured('Evaluator',
         loadPrompt('review/reviewer', { scope, inquiryReference }),
-        { outputFormat: SINGLE_REVIEW_SCHEMA, silent: true },
+        SINGLE_REVIEW_SCHEMA,
+        { silent: true, label: `dimension/${dimen.name}` },
       )
-      const r = structured as any ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce output' }
+      const r = structured ?? { status: 'needs-revision', score: 1, comment: 'Review failed to produce structured output after retries' }
       return { id: dimen.name, type: 'dimension' as const, status: r.status, score: r.score, comment: r.comment }
     })())
   }
@@ -385,15 +413,16 @@ export async function holisticReview(inquiryPath?: string): Promise<{ pass: bool
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
   const inquiryReference = referenceFromInquiryDir(inquiryPath)
 
-  const { structured } = await runAgent('Evaluator',
+  const { structured } = await runAgentExpectStructured('Evaluator',
     loadPrompt('review/holistic', { inquiryReference }),
-    { outputFormat: HOLISTIC_SCHEMA },
+    HOLISTIC_SCHEMA,
+    { label: 'holistic' },
   )
 
-  const result = structured as any
+  const result = structured
   if (!result || typeof result !== 'object') {
-    console.log(dim('    Could not parse holistic review'))
-    return { pass: false, feedback: 'Holistic review failed to produce output' }
+    console.log(dim('    Could not parse holistic review after retries'))
+    return { pass: false, feedback: 'Holistic review failed to produce structured output' }
   }
 
   const pass = result.status === 'pass'
