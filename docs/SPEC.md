@@ -437,8 +437,16 @@ interface HarnessConfig {
     litellmPort: number
     backendApiKey: string
   }
+  mcpServers?: Record<string, {  // 外接 MCP server（默认开 Playwright）
+    command: string              // 启动命令，如 "npx"
+    args?: string[]              // 启动参数，如 ["-y", "@playwright/mcp@latest"]
+    env?: Record<string, string>
+    enabled?: boolean            // 默认 true；写 false 即关
+  }>
 }
 ```
+
+**MCP server 默认配置**：`config.default.json` 默认启用 Playwright MCP（`@playwright/mcp`），挂在 **Generator + Evaluator** 上作为渲染层 sensor —— 让两个 agent 都能真实打开页面验证 UI 任务。Interrogator 故意不挂（纯对话阶段）。MCP 工具走 SDK `mcp__<server>__<tool>` 命名，注册时用通配 `mcp__<server>__*` 写进 `allowedTools`。用户可在 `.harness/config.json` 里写 `{"mcpServers": {"playwright": {"enabled": false}}}` 关闭，或追加新的 stdio MCP server。
 
 ---
 

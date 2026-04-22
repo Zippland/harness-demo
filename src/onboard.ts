@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
 import { resolve } from 'path'
-import { config, WORK_DIR, DEFAULT_PRINCIPLES } from './config.js'
+import { config, WORK_DIR, DEFAULT_PRINCIPLES, MCP_ENABLED_SERVERS } from './config.js'
 import { bold, green, red, dim } from './ui.js'
 import type { HarnessConfig } from './types.js'
 
@@ -78,6 +78,11 @@ export async function onboard(): Promise<void> {
       writeFileSync(principlesPath, readFileSync(DEFAULT_PRINCIPLES, 'utf-8'))
       console.log(green(`  ✓ Created ${principlesPath} (edit to customize)\n`))
     }
+  }
+
+  if (MCP_ENABLED_SERVERS.length > 0) {
+    console.log(dim(`  Browser/MCP servers enabled for Generator + Evaluator: ${MCP_ENABLED_SERVERS.join(', ')}`))
+    console.log(dim(`  Disable in .harness/config.json:  { "mcpServers": { "<name>": { "enabled": false } } }\n`))
   }
 
   rl.close()

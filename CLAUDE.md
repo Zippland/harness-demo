@@ -54,6 +54,7 @@ All agent prompts are external markdown files with `{{variable}}` placeholders, 
 - **Agent text is relayed between sessions** — Generator's full text response (`textBlocks.join`) is injected into Evaluator's prompt as `{{generatorResponse}}`, enabling conversation without shared sessions.
 - **Review uses a worker pool** — `runPool(fns, config.concurrency)` limits parallel reviewer agents.
 - **`WORK_DIR` vs `TOOL_DIR`** — agents operate in `process.cwd()`, prompts/config load from the package install location.
+- **Browser automation via MCP** — Generator + Evaluator have Playwright MCP (`@playwright/mcp`) wired in by default via `config.mcpServers`. Interrogator does NOT (kept text-only). Tools appear as `mcp__playwright__*`; configure / disable in `.harness/config.json`.
 
 ### Data Flow
 

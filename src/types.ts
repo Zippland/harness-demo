@@ -47,6 +47,13 @@ export interface SingleReview {
   comment: string
 }
 
+export interface McpServerSpec {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+  enabled?: boolean
+}
+
 export interface HarnessConfig {
   model: string
   apiBaseUrl: string
@@ -61,4 +68,5 @@ export interface HarnessConfig {
     litellmPort: number
     backendApiKey: string
   }
+  mcpServers?: Record<string, McpServerSpec>
 }

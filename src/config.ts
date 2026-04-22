@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from 'fs'
 import { resolve, relative, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import type { HarnessConfig } from './types.js'
+import type { HarnessConfig, McpServerSpec } from './types.js'
 
 export const TOOL_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 export const WORK_DIR = process.cwd()
@@ -25,8 +25,22 @@ const DEFAULT_PRINCIPLES_PATH = resolve(TOOL_DIR, 'control/golden-principles.md'
 export const DEFAULT_PRINCIPLES = DEFAULT_PRINCIPLES_PATH
 export const PRINCIPLES_FILE = existsSync(LOCAL_PRINCIPLES) ? LOCAL_PRINCIPLES : DEFAULT_PRINCIPLES_PATH
 
+// 浅合并 + 对 mcpServers 按 server name 一层深合并。
+// 让用户在 .harness/config.json 里写 { mcpServers: { playwright: { enabled: false } } }
+// 关掉默认 server，而不丢 default 里的 command/args。
+function mergeConfig(base: HarnessConfig, override: Partial<HarnessConfig>): HarnessConfig {
+  const merged = { ...base, ...override }
+  if (base.mcpServers || override.mcpServers) {
+    merged.mcpServers = { ...(base.mcpServers ?? {}) }
+    for (const [name, spec] of Object.entries(override.mcpServers ?? {})) {
+      merged.mcpServers[name] = { ...(base.mcpServers?.[name] ?? {} as McpServerSpec), ...spec }
+    }
+  }
+  return merged
+}
+
 function loadConfig(): HarnessConfig {
-  const defaults: HarnessConfig = JSON.parse(readFileSync(resolve(TOOL_DIR, 'config.default.json'), 'utf-8'))
+  let cfg: HarnessConfig = JSON.parse(readFileSync(resolve(TOOL_DIR, 'config.default.json'), 'utf-8'))
 
   const candidates = [
     resolve(WORK_DIR, '.harness/config.json'),
@@ -36,18 +50,32 @@ function loadConfig(): HarnessConfig {
   for (const path of candidates) {
     if (existsSync(path)) {
       try {
-        const override = JSON.parse(readFileSync(path, 'utf-8'))
-        Object.assign(defaults, override)
+        const override = JSON.parse(readFileSync(path, 'utf-8')) as Partial<HarnessConfig>
+        cfg = mergeConfig(cfg, override)
         console.log(`  \x1b[2mconfig:\x1b[0m ${relative(WORK_DIR, path) || path}`)
         break
       } catch { /* 文件损坏，跳过 */ }
     }
   }
 
-  return defaults
+  return cfg
 }
 
 export const config = loadConfig()
+
+// 已剥离 enabled 字段、已过滤禁用项的 SDK-ready 形态。SDK Options.mcpServers
+// 不认识 enabled 字段，得清理掉再传。
+export const MCP_SERVERS: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> =
+  Object.fromEntries(
+    Object.entries(config.mcpServers ?? {})
+      .filter(([, spec]) => spec.enabled !== false)
+      .map(([name, spec]) => {
+        const { enabled: _enabled, ...rest } = spec
+        return [name, rest]
+      }),
+  )
+
+export const MCP_ENABLED_SERVERS = Object.keys(MCP_SERVERS)
 
 // 设置环境变量（在 agent 子进程启动前）
 if (config.apiBaseUrl) process.env.ANTHROPIC_BASE_URL = config.apiBaseUrl

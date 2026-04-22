@@ -50,6 +50,7 @@ async function runInterrogatorTurn(
       cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
       model: config.model,
+      // Interrogator 故意不挂 mcpServers — 纯对话阶段，浏览器与"不主动探索"的设计冲突。
       allowedTools: ['Read', 'Glob', 'Grep'],
       disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],
       ...(sessionId ? { resume: sessionId } : {}),

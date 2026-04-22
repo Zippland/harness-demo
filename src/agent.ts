@@ -1,23 +1,30 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { config, WORK_DIR, PROMPTS_DIR } from './config.js'
+import { config, WORK_DIR, PROMPTS_DIR, MCP_SERVERS, MCP_ENABLED_SERVERS } from './config.js'
 import { dim, cyan, yellow, red, ROLE_STYLE, logTool } from './ui.js'
 import type { Role } from './types.js'
 
 // ─── Agent 工具权限 ───
 
+// MCP 工具走 mcp__<server>__<tool> 命名。permissionMode:'acceptEdits' 不会自动放行 MCP，
+// 必须在 allowedTools 显式列出。每个启用的 server 注册一条通配。
+const mcpAllowPatterns = MCP_ENABLED_SERVERS.map((name) => `mcp__${name}__*`)
+
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Generator: {
     model: config.model,
-    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead', ...mcpAllowPatterns],
+    mcpServers: MCP_SERVERS,
   },
   Evaluator: {
     model: config.model,
-    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead'],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead', ...mcpAllowPatterns],
     disallowedTools: ['Write', 'Edit', 'TodoWrite'],
+    mcpServers: MCP_SERVERS,
   },
   Interrogator: {
+    // 故意不挂 MCP：纯对话阶段，给浏览器违背"不主动探索"的设计。
     model: config.model,
     allowedTools: ['Read', 'Glob', 'Grep'],
     disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],

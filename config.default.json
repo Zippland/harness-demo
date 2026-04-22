@@ -5,5 +5,11 @@
   "concurrency": 4,
   "maxSprints": 10,
   "maxNegotiateRounds": 30,
-  "maxL1Retries": 5
+  "maxL1Retries": 5,
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
 }
