@@ -36,7 +36,7 @@ export function loadPrompt(name: string, vars: Record<string, string>): string {
 export async function runAgent(
   role: Role,
   prompt: string,
-  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any>; silent?: boolean; _retryCount?: number } = {},
+  opts: { resume?: string; outputFormat?: any; toolOverrides?: Record<string, any>; silent?: boolean; appendSystemPrompt?: string; _retryCount?: number } = {},
 ): Promise<{ sessionId: string; result: string; structured?: any }> {
   if (!opts.silent) {
     const color = ROLE_STYLE[role]
@@ -52,6 +52,7 @@ export async function runAgent(
       ...(opts.toolOverrides ?? {}),
       ...(opts.resume ? { resume: opts.resume } : {}),
       ...(opts.outputFormat ? { outputFormat: opts.outputFormat } : {}),
+      ...(opts.appendSystemPrompt ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: opts.appendSystemPrompt } } : {}),
     },
   })
 

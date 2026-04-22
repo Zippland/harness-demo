@@ -363,3 +363,14 @@ export function referenceFromInquiryDir(inquiryDir?: string): string {
     resolve(inquiryDir, 'session.jsonl'),
   )
 }
+
+// Pointer-only 形态：返回 spec / session 文件路径，不组装文本。
+// prompt 模板（generator-system.md）自己写说明文字，这里只提供数据。
+export function inquiryPaths(inquiryDir?: string): { specPath: string; sessionPath: string } {
+  if (!inquiryDir) return { specPath: '(none — no inquiry was performed)', sessionPath: '(none)' }
+  return {
+    specPath: resolve(inquiryDir, 'spec.md'),
+    sessionPath: resolve(inquiryDir, 'session.jsonl'),
+  }
+}
+

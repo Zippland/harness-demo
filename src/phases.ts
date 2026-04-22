@@ -3,7 +3,7 @@ import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
-import { referenceFromInquiryDir } from './inquire.js'
+import { referenceFromInquiryDir, inquiryPaths } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview } from './types.js'
@@ -55,20 +55,6 @@ const HOLISTIC_SCHEMA = {
       comment: { type: 'string', description: 'Specific findings with evidence. If fail: what needs a new sprint.' },
     },
     required: ['status', 'comment'],
-  },
-}
-
-const SUMMARY_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      summary: {
-        type: 'string',
-        description: 'Compact summary (max 300 chars) for subsequent features: key changes, interfaces created, important decisions',
-      },
-    },
-    required: ['summary'],
   },
 }
 
@@ -270,11 +256,17 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
 export async function implement(sprintNum: number): Promise<void> {
   const sprint = loadSprint(sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
-  const inquiryReference = referenceFromInquiryDir(sprint.inquiryPath)
+  const { specPath, sessionPath } = inquiryPaths(sprint.inquiryPath)
   const total = sprint.features.length
   const pending = sprint.features.filter((f) => f.status !== 'passing')
 
   console.log(bold(`\n  ══ IMPLEMENT — Sprint ${sprintNum} ══  ${pending.length} features\n`))
+
+  // implement 阶段所有 feature 共享同一个 session：人格/约束/principles/inquiry 路径
+  // 沉到 systemPrompt（永驻、不被 compact），由 SDK auto-compact 管理上下文滚动。
+  // spec.md / session.jsonl 只传路径，prompt 自己写"按需 Read"的说明 —— 不内联避免每 feature 重复。
+  const systemPrompt = loadPrompt('implement/generator-system', { principles, specPath, sessionPath })
+  let sharedSessionId: string | undefined = sprint.implementSessionId
 
   for (let i = 0; i < sprint.features.length; i++) {
     const feature = sprint.features[i]
@@ -286,19 +278,19 @@ export async function implement(sprintNum: number): Promise<void> {
 
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
-    // 构建前序 feature 的 compact summaries (0..n-1)
-    const previousSummaries = sprint.features
-      .slice(0, i)
-      .filter((f) => f.summary)
-      .map((f) => `- **${f.name}** [${f.status}]: ${f.summary}`)
-    const summaryBlock = previousSummaries.length > 0
-      ? `<PREVIOUS_FEATURES>\n\nThese features were implemented earlier in this sprint:\n\n${previousSummaries.join('\n')}\n\n</PREVIOUS_FEATURES>`
-      : ''
-
-    const prompt = loadPrompt('implement/generator', {
-      featurePrompt: feature.prompt, background: feature.background ?? '', previousSummaries: summaryBlock, principles, inquiryReference,
+    const prompt = loadPrompt('implement/generator-feature', {
+      featurePrompt: feature.prompt, background: feature.background ?? '',
     })
-    let { sessionId: finalSessionId } = await runAgent('Generator', prompt)
+    const opts = sharedSessionId
+      ? { resume: sharedSessionId }
+      : { appendSystemPrompt: systemPrompt }
+    const featureResult = await runAgent('Generator', prompt, opts)
+    sharedSessionId = featureResult.sessionId
+
+    if (sprint.implementSessionId !== sharedSessionId) {
+      sprint.implementSessionId = sharedSessionId
+      writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
+    }
 
     const eval_ = parseEvaluation(feature.evaluation)
     let passed = false
@@ -316,19 +308,14 @@ export async function implement(sprintNum: number): Promise<void> {
         console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${config.maxL1Retries}`)}`)
         if (attempt < config.maxL1Retries) {
           console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
-          const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output, inquiryReference }), { resume: finalSessionId, silent: true })
-          finalSessionId = retryResult.sessionId
+          const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output }), { resume: sharedSessionId, silent: true })
+          sharedSessionId = retryResult.sessionId
         }
       }
     }
 
     feature.status = passed ? 'passing' : 'failing'
-
-    // Summarizer: resume 当前 session + 注入前序 summaries，生成 compact summary
-    const statusHint = passed ? '' : '\n- What went wrong (L1 checks failed)'
-    const summaryPrompt = loadPrompt('implement/generator-summary', { statusHint, previousSummaries: summaryBlock })
-    const summaryResult = await runAgent('Generator', summaryPrompt, { resume: finalSessionId, outputFormat: SUMMARY_SCHEMA, silent: true })
-    feature.summary = summaryResult.structured?.summary ?? ''
+    sprint.implementSessionId = sharedSessionId
     writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
     if (!passed) console.log(`    ${red('L1 gave up')}`)
   }

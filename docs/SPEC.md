@@ -107,13 +107,19 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 ┌─────────────────────────────────────────────────────────────┐
 │  Phase 1: IMPLEMENT (L1 Loop)                               │
 │                                                              │
+│  Generator 角色 + GOLDEN_PRINCIPLES + Constraints           │
+│    + inquiryPointer (spec.md / session.jsonl 路径)          │
+│    → SDK appendSystemPrompt（永驻 system 层，不被 compact） │
+│                                                              │
 │  for each feature:                                           │
-│    1. Generator (新 session) + 前序 summaries               │
-│    2. Research & implement                                  │
-│    3. Run deterministic checks (L1)                         │
-│    4. If fail: Generator retries (up to maxL1Retries)       │
-│    5. Summarizer (resume session) → feature.summary         │
-│    6. Update feature.status                                 │
+│    1. 首个 feature：新建 session（带 systemPrompt）         │
+│       后续 feature：resume sharedSessionId                  │
+│    2. user message: TASK + BACKGROUND（精简）                │
+│    3. Research & implement（前序 feature 的工具调用历史     │
+│       通过 session 自然可见，由 SDK auto-compact 管理）     │
+│    4. Run deterministic checks (L1)                         │
+│    5. If fail: Generator retries (resume + 轻量 retry msg)  │
+│    6. 写回 sprint.implementSessionId + feature.status       │
 └─────────────────────────────────────────────────────────────┘
                             │
                             ▼
@@ -156,44 +162,56 @@ Harness 将控制论的五要素映射到 AI Agent 系统中：
 └─────────────────────────┘
 ```
 
-### 4.2 Compact Summary 机制
+### 4.2 Session 共享机制
 
-同一 Sprint 内的多个 Feature 需要上下文传递，但完整 session 上下文会线性增长。Compact Summary 解决这个问题：
+同一 Sprint 内的多个 Feature 需要上下文传递。本项目早期用"每 feature 一个新 session + Summarizer 把执行 session 浓缩成 summary 注入下一 feature"的方案手工管理上下文滚动；2026-04 改为共享 session + SDK auto-compact。
 
 ```
-feature 1: 新 session
-  ↓ 执行
-  ↓ Summarizer (resume session1 + []) → summary1
+implement 阶段开始
+  ↓
+  Generator 角色/principles/constraints/工作风格
+    + inquiryPointer (spec.md & session.jsonl 路径，pointer 形态)
+    → SDK appendSystemPrompt（永驻 system 层）
+  ↓
+feature 1: 新 session（带 systemPrompt）
+  ↓ user message: TASK + BACKGROUND（不再内联 inquiry，模型按需 Read spec）
+  ↓ 执行（写回 sprint.implementSessionId）
 
-feature 2: 新 session + [summary1]
-  ↓ 执行
-  ↓ Summarizer (resume session2 + [summary1]) → summary2
+feature 2: resume sharedSessionId
+  ↓ user message: TASK + BACKGROUND
+  ↓ 执行（前序 feature 的工具调用历史在 session 里自然可见）
 
-feature 3: 新 session + [summary1, summary2]
-  ↓ 执行
-  ↓ Summarizer (resume session3 + [summary1, summary2]) → summary3
+feature 3: resume sharedSessionId
+  ↓ ...
 ```
 
 **核心设计**：
 
-| 组件 | 输入 | 输出 |
-|-----|------|-----|
-| Feature N 执行 | 新 session + summaries[0..n-1] | 代码变更 |
-| Summarizer | resume session[n] + summaries[0..n-1] | summary[n] |
+| 层 | 内容 | 性质 |
+|---|------|-----|
+| **System** | Generator 角色 + GOLDEN_PRINCIPLES + Constraints + Working style + inquiryPointer (spec/session.jsonl 路径) | 永驻、不被 compact 触及 |
+| **User message（feature 形态）** | featurePrompt + background | 每个 feature 一条，首个 = 后续对称 |
+| **User message（retry 形态）** | check 输出 + 一句修复指令 | L1 失败时追加 |
+| **Session 历史** | 前序 feature 的工具调用、文件读写、模型推理 | 由 SDK auto-compact 在阈值时自动压缩 |
 
 **设计理由**：
 
-- **每个 Feature 独立 session**：上下文干净，不存在越来越长的问题
-- **Summarizer resume 执行 session**：能看到完整执行细节，生成高质量摘要
-- **滚动压缩**：旧的上下文被压缩为 summary，新的上下文保持完整
-- **状态外部化**：summary 存储在 sprint 文件中，断点恢复友好
+- **首个 = 后续对称**：feature 之间无非对称的"开局/续接"区分，心智模型清晰
+- **System 层永驻**：principles 不会被 compact 漂移；同时与每条 user message 解耦
+- **状态外部化**：sprint.implementSessionId 持久化到 sprint 文件，断点恢复时可 resume
+- **上下文质量**：后续 feature 看到的是前序 feature 的真实执行细节（工具调用、文件读写），而非 Summarizer 的有损压缩
 
-**Summary 内容**（由 Agent 自行判断）：
+**与早期 Summarizer 方案的差异**：
 
-- What was done（做了什么，避免重复）
-- What was produced（产出了什么可依赖的东西）
-- What decisions were made（做了什么影响后续的决策）
-- What went wrong（如果 L1 失败，有什么问题）
+| 维度 | 早期（Summarizer） | 当前（共享 Session） |
+|-----|-------------------|---------------------|
+| 每 feature 的 LLM 调用数 | 2（执行 + Summarizer） | 1（执行） |
+| 上下文质量 | 有损压缩（≤300 字 summary） | 原始执行历史 + SDK auto-compact |
+| 上下文增长 | 受 summary 累加控制 | 由 SDK 自动管理 |
+| 状态外部化粒度 | 每 feature 一段人可读 summary | sessionId + feature.status |
+| Prompt 模板复杂度 | 4 个文件（generator/retry/summary/+变量拼接） | 3 个文件（system/feature/retry，模板纯净） |
+
+**断点恢复**：implement 中途中断后重跑，若 sprint.implementSessionId 存在且 SDK 的 session jsonl 仍在原地（`~/.claude/projects/<hash>/<sid>.jsonl`），自动 resume；若 session jsonl 已被清理，需手动清掉 sprint 文件中的 implementSessionId 后再跑（视为重新开局）。
 
 ---
 
@@ -211,6 +229,7 @@ interface Sprint {
   context?: string                  // 任务上下文
   previousReview?: string           // 上一轮的评审反馈
   features: Feature[]               // N 个功能点
+  implementSessionId?: string       // implement 阶段共享的 SDK session，断点恢复用
 }
 
 interface Feature {
@@ -223,7 +242,6 @@ interface Feature {
     intent: string                  // 功能意图（供 Evaluator 理解）
   }
   status: 'pending' | 'failing' | 'passing'
-  summary?: string                  // Compact summary 供后续 feature 参考
 }
 
 interface ReviewDimension {
@@ -679,6 +697,7 @@ $ harness "Implement a CLI todo app with add, list, and complete commands"
    - 剥离不再需要的约束，为新能力腾出空间
    - ✓ 2026-04：剥离 research-execute 两阶段模式（首个自我剥离案例，见 10.4）
    - ✓ 2026-04：新增 Inquiry Phase 和 L0 反馈层（建立 reference signal，见 10.5/10.6）
+   - ✓ 2026-04：剥离 implement 阶段的 Summarizer 机制，改为共享 session + SDK auto-compact + appendSystemPrompt（见 4.2）。第二个自我剥离案例，约束机制：手工 summary 在 SDK 提供 auto-compact 后即变冗余
 
 ---
 

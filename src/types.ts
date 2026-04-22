@@ -12,7 +12,6 @@ export interface Feature {
   background: string
   evaluation: Evaluation | string
   status: 'pending' | 'failing' | 'passing'
-  summary?: string  // Compact context for subsequent features
 }
 
 export interface ReviewDimension {
@@ -29,6 +28,7 @@ export interface Sprint {
   context?: string
   previousReview?: string
   features: Feature[]
+  implementSessionId?: string  // 持久化 implement 阶段共享的 SDK session，用于断点恢复
 }
 
 export interface ReviewResult {
