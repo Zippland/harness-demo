@@ -28,7 +28,9 @@ export interface Sprint {
   context?: string
   previousReview?: string
   features: Feature[]
-  implementSessionId?: string  // 持久化 implement 阶段共享的 SDK session，用于断点恢复
+  negotiateGeneratorSessionId?: string  // negotiate Generator session，断点恢复用
+  negotiateEvaluatorSessionId?: string  // negotiate Evaluator session，断点恢复用
+  implementSessionId?: string  // implement 阶段共享 session，断点恢复用
 }
 
 export interface ReviewResult {

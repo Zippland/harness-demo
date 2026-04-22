@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlink
 import { resolve } from 'path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { config, WORK_DIR, INQUIRY_DIR, PENDING_DIR, COMPLETED_DIR, PROGRESS_DIR, PROMPTS_DIR } from './config.js'
-import { bold, dim, green, cyan, yellow, red, startSpinner } from './ui.js'
+import { bold, dim, green, cyan, startSpinner } from './ui.js'
 
 export interface PendingTask {
   taskId: string
@@ -13,6 +13,8 @@ export interface PendingTask {
   createdAt: string
 }
 
+// Interrogator 只负责"反问"，不再产 spec —— spec 由后续 negotiate 阶段对抗生成。
+// 用户用 /done 主动结束讨论。
 const TURN_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
@@ -22,43 +24,10 @@ const TURN_SCHEMA = {
         type: 'string',
         description: 'What you want to say to the user this turn. Keep it natural — this is a conversation.',
       },
-      ready_for_spec: {
-        type: 'boolean',
-        description: 'Set true ONLY when the discussion has surfaced enough AND you have filled in the spec field below in this same response. When true, the discussion ends immediately. Default false.',
-      },
-      spec: {
-        type: 'string',
-        description: 'The final task spec as a markdown document. Fill this ONLY when ready_for_spec is true — then your message is your closing line to the user, and this spec is the authoritative artifact downstream agents will build against. Leave empty/omit otherwise.',
-      },
     },
-    required: ['message', 'ready_for_spec'],
+    required: ['message'],
   },
 }
-
-const SPEC_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      spec: {
-        type: 'string',
-        description: 'A single markdown document capturing the task spec. Include: the user\'s true goal, what is in scope, what was explicitly ruled out during our discussion, and what success looks like. Write in markdown with sections as you see fit. Keep it tight — this is the *compressed* view; the full discussion is preserved separately.',
-      },
-    },
-    required: ['spec'],
-  },
-}
-
-const SPEC_PROMPT = `Our discussion is complete. Now write the task spec.
-
-Output a single markdown document (via the structured JSON schema) that captures:
-
-- **What the user truly wants** — the underlying goal, not just the surface request
-- **What is in scope** — concrete boundaries
-- **What was explicitly ruled out** — directions you and the user considered and rejected; this is the most important part because it prevents future drift
-- **What success looks like** — observable signs the task is done right
-
-Write in markdown. Organize with headings however is clearest. Do not pad.`
 
 function writeEvent(log: WriteStream, event: Record<string, any>): void {
   log.write(JSON.stringify({ ts: Date.now(), ...event }) + '\n')
@@ -72,9 +41,7 @@ function writeEvent(log: WriteStream, event: Record<string, any>): void {
 async function runInterrogatorTurn(
   prompt: string,
   sessionId: string | undefined,
-  outputFormat: any | undefined,
   sessionLog: WriteStream,
-  kind?: 'spec',
 ): Promise<{ sessionId: string; text: string; structured?: any }> {
   const q = query({
     prompt,
@@ -85,7 +52,7 @@ async function runInterrogatorTurn(
       allowedTools: ['Read', 'Glob', 'Grep'],
       disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],
       ...(sessionId ? { resume: sessionId } : {}),
-      ...(outputFormat ? { outputFormat } : {}),
+      outputFormat: TURN_SCHEMA,
     },
   })
 
@@ -119,11 +86,9 @@ async function runInterrogatorTurn(
     throw e
   }
 
-  const finalText = (structured?.message ?? structured?.spec ?? text).trim()
+  const finalText = (structured?.message ?? text).trim()
   const event: Record<string, any> = { role: 'assistant', content: finalText }
   if (toolCalls.length > 0) event.tool_calls = toolCalls
-  if (kind) event.kind = kind
-  if (structured?.ready_for_spec === true) event.ready_for_spec = true
   writeEvent(sessionLog, event)
 
   return { sessionId: newSessionId, text: finalText, structured }
@@ -153,16 +118,14 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res))
 
   console.log(bold('\n  ══ INQUIRY ══\n'))
-  console.log(dim('  Talk with the Interrogator to figure out what this task really is.'))
-  console.log(dim('  The Interrogator ends when it thinks enough has surfaced;'))
-  console.log(dim('  type /done to force-end early.\n'))
+  console.log(dim('  Talk with the Interrogator to surface what this task really is.'))
+  console.log(dim('  Interrogator only asks — never writes the spec.'))
+  console.log(dim('  Type /done when you feel enough has been surfaced.\n'))
 
   // 首轮 SDK prompt = role 描述 + 原始 task，在代码里拼接
   const firstPrompt = `${roleText}\n\n${originalTask}`
   let userMessage = firstPrompt
   let sessionId: string | undefined
-  let spec = ''
-  let forceDone = false
 
   while (true) {
     console.log(`\n  ${dim('──')} ${cyan('Interrogator')} ${dim('──')}`)
@@ -171,7 +134,7 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
     let text: string
     let structured: any
     try {
-      const turn = await runInterrogatorTurn(userMessage, sessionId, TURN_SCHEMA, sessionLog)
+      const turn = await runInterrogatorTurn(userMessage, sessionId, sessionLog)
       newId = turn.sessionId
       text = turn.text
       structured = turn.structured
@@ -182,16 +145,9 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
     const display = (structured?.message ?? text).trim()
     for (const line of display.split('\n')) console.log(`    ${cyan('>')} ${line}`)
 
-    if (structured?.ready_for_spec === true) {
-      spec = (structured?.spec ?? '').trim()
-      console.log(dim('\n  Interrogator closed the discussion and wrote the spec.'))
-      break
-    }
-
     const reply = (await ask('\n  You (or /done): ')).trim()
     if (reply.toLowerCase() === '/done') {
-      console.log(dim('  User force-ended the discussion.'))
-      forceDone = true
+      console.log(dim('  Discussion closed by user.'))
       break
     }
     writeEvent(sessionLog, { role: 'user', content: reply })
@@ -199,28 +155,9 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   }
   rl.close()
 
-  // 如果是 /done 强制结束，或 Interrogator 标了 ready 但没给 spec，补调一次
-  if (!spec) {
-    const reason = forceDone ? 'user /done' : 'Interrogator marked ready without spec'
-    console.log(dim(`  Drafting spec (${reason})...`))
-    writeEvent(sessionLog, { role: 'system', kind: 'spec_request', content: SPEC_PROMPT })
-    const stopSpecSpinner = startSpinner('drafting task spec...')
-    try {
-      const { structured } = await runInterrogatorTurn(SPEC_PROMPT, sessionId, SPEC_SCHEMA, sessionLog, 'spec')
-      spec = (structured?.spec ?? '').trim()
-    } catch (e: any) {
-      console.log(red(`    Spec draft failed: ${e?.message ?? e}`))
-    } finally {
-      stopSpecSpinner()
-    }
-  }
-
-  if (!spec) {
-    console.log(yellow('    ⚠ Interrogator did not produce a spec. Writing fallback.'))
-    spec = `# Task Spec\n\n${originalTask}\n\n_(Interrogator did not produce a structured spec; see session.jsonl for full discussion.)_\n`
-  }
-
-  writeFileSync(specPath, spec)
+  // spec.md 留作空占位文件，由后续 negotiate 阶段的 Generator 填入。
+  // 控制论意义：spec 由对抗驱动产生（negotiate Gen↔Eval），而非 Interrogator 单边压缩。
+  writeFileSync(specPath, '')
   sessionLog.end()
 
   const pending: PendingTask = {
@@ -234,8 +171,8 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   writeFileSync(pendingPath, JSON.stringify(pending, null, 2))
 
   console.log(green(`\n  ✓ Inquiry saved:`))
-  console.log(dim(`    spec:    ${specPath}`))
   console.log(dim(`    session: ${sessionPath}`))
+  console.log(dim(`    spec:    ${specPath} (empty placeholder — Generator/Evaluator will fill it during negotiate)`))
   console.log(dim(`  Run 'harness execute' to start autonomous execution.\n`))
   return pending
 }
@@ -250,20 +187,17 @@ export function createDirectPending(originalTask: string): PendingTask {
   const specPath = resolve(inquiryDir, 'spec.md')
   const sessionPath = resolve(inquiryDir, 'session.jsonl')
 
-  const specMd = [
-    '# Task Spec (direct mode)',
-    '',
-    'No interactive inquiry was performed. The user invoked `harness execute --direct` with the following task, which should be treated as the authoritative spec:',
-    '',
-    originalTask,
-    '',
-  ].join('\n')
-  writeFileSync(specPath, specMd)
+  // spec.md 留空，由 negotiate 阶段填入。direct mode 把原始 task 写进 session 让 Generator 看到。
+  writeFileSync(specPath, '')
 
   const sessionSeed = JSON.stringify({
     ts,
+    role: 'user',
+    content: originalTask,
+  }) + '\n' + JSON.stringify({
+    ts,
     role: 'system',
-    content: 'Direct mode — no interactive inquiry was performed. The spec.md above contains the task verbatim as the user provided it.',
+    content: 'Direct mode — no interactive inquiry. The user message above is the task verbatim. Generator should treat it as the seed for spec.md.',
   }) + '\n'
   writeFileSync(sessionPath, sessionSeed)
 

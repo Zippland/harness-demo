@@ -5,33 +5,10 @@ import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
 import { referenceFromInquiryDir, inquiryPaths } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
-import { dim, bold, green, red, yellow, cyan, magenta, printReview, formatReviewFeedback, progressBar } from './ui.js'
-import type { ReviewResult, SingleReview } from './types.js'
+import { dim, bold, green, red, yellow, cyan, magenta, printReview, progressBar } from './ui.js'
+import type { ReviewResult, SingleReview, Sprint } from './types.js'
 
 // ─── JSON Schemas ───
-
-const CONTRACT_REVIEW_SCHEMA = {
-  type: 'json_schema' as const,
-  schema: {
-    type: 'object',
-    properties: {
-      reviews: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            featureId: { type: 'string' },
-            status: { type: 'string', enum: ['pass', 'needs-revision'] },
-            comment: { type: 'string', description: 'Always provide a comment, even if passing' },
-          },
-          required: ['featureId', 'status', 'comment'],
-        },
-      },
-      overallComment: { type: 'string', description: 'Cross-cutting concerns, missing features, architectural issues' },
-    },
-    required: ['reviews', 'overallComment'],
-  },
-}
 
 const SINGLE_REVIEW_SCHEMA = {
   type: 'json_schema' as const,
@@ -43,6 +20,20 @@ const SINGLE_REVIEW_SCHEMA = {
       comment: { type: 'string', description: 'Specific feedback with evidence' },
     },
     required: ['status', 'score', 'comment'],
+  },
+}
+
+const NEGOTIATE_APPROVAL_SCHEMA = {
+  type: 'json_schema' as const,
+  schema: {
+    type: 'object',
+    properties: {
+      approved: {
+        type: 'boolean',
+        description: 'Whether you approve the current spec.md + sprint-N.json as they exist on disk. true ends the negotiation loop.',
+      },
+    },
+    required: ['approved'],
   },
 }
 
@@ -59,15 +50,6 @@ const HOLISTIC_SCHEMA = {
 }
 
 // ─── Helpers ───
-
-function parseReview(structured: any): ReviewResult | null {
-  if (structured && typeof structured === 'object' && Array.isArray(structured.reviews)) {
-    const reviews = structured.reviews as ReviewResult['reviews']
-    const approved = reviews.length > 0 && reviews.every((r) => r.status === 'pass')
-    return { approved, reviews, overallComment: structured.overallComment ?? '' }
-  }
-  return null
-}
 
 function runChecks(checks: string[]): { pass: boolean; output: string } {
   const results: string[] = []
@@ -110,17 +92,21 @@ async function runAgentExpectStructured(
   role: 'Generator' | 'Evaluator' | 'Interrogator',
   prompt: string,
   schema: any,
-  opts: { silent?: boolean; maxRetries?: number; label?: string } = {},
+  opts: { silent?: boolean; maxRetries?: number; label?: string; resume?: string; appendSystemPrompt?: string } = {},
 ): Promise<{ sessionId: string; structured?: any; result: string }> {
   const maxRetries = opts.maxRetries ?? 2
   const label = opts.label ?? role
-  let turn = await runAgent(role, prompt, { outputFormat: schema, silent: opts.silent })
+  let turn = await runAgent(role, prompt, {
+    outputFormat: schema, silent: opts.silent,
+    ...(opts.resume ? { resume: opts.resume } : {}),
+    ...(opts.appendSystemPrompt ? { appendSystemPrompt: opts.appendSystemPrompt } : {}),
+  })
   if (turn.structured) return turn
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     console.log(`    ${yellow('!')} ${dim(`${label}: no structured output, retrying (${attempt}/${maxRetries})...`)}`)
     turn = await runAgent(role,
-      'Your previous response did not include the required structured output. Please respond again using the structured JSON schema — just the structured payload, no prose wrapping.',
+      'Your previous response did not include the required structured output. Please respond again using the structured JSON schema — first your free-text reply for the conversation, then the StructuredOutput tool call.',
       { resume: turn.sessionId, outputFormat: schema, silent: opts.silent },
     )
     if (turn.structured) return turn
@@ -134,119 +120,126 @@ async function runAgentExpectStructured(
 
 export async function negotiate(sprintNum: number, previousReview?: string, inquiryPath?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
+
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const contractFormat = readFileSync(resolve(TOOL_DIR, 'control/contract-format.md'), 'utf-8')
   const sprintFile = sprintPath(sprintNum)
-  const inquiryReference = referenceFromInquiryDir(inquiryPath)
+  const { specPath, sessionPath } = inquiryPaths(inquiryPath)
 
-  const contractVars = { principles, contractFormat, progressFile: sprintFile, sprintNum: String(sprintNum), inquiryReference }
+  const promptVars = {
+    specPath, sessionPath, principles, contractFormat,
+    progressFile: sprintFile, sprintNum: String(sprintNum),
+  }
+  const generatorSystemPrompt = loadPrompt('negotiate/generator-system', promptVars)
+  const evaluatorSystemPrompt = loadPrompt('negotiate/evaluator-system', promptVars)
 
-  let gen: { sessionId: string; result: string; structured?: any }
-
-  if (previousReview) {
-    const prompt = loadPrompt('negotiate/generator-revise', { ...contractVars, feedback: previousReview, evaluatorReasoning: '' })
-    gen = await runAgent('Generator', prompt)
-  } else {
-    const prompt = loadPrompt('negotiate/generator', contractVars)
-    gen = await runAgent('Generator', prompt)
+  // 加载 sprint 文件骨架（如果存在）—— 用于断点恢复读 sessionId
+  let sprint: Sprint | null = null
+  if (existsSync(sprintFile)) {
+    const loaded = tryLoadSprint(sprintNum)
+    if (loaded.sprint) sprint = loaded.sprint
   }
 
-  // 验证 sprint 文件
+  let generatorSessionId: string | undefined = sprint?.negotiateGeneratorSessionId
+  let evaluatorSessionId: string | undefined = sprint?.negotiateEvaluatorSessionId
+
+  // ─── Generator round 1 起手 ───
+  // 全新：previousReview（sprint > 1）或 fresh draft（sprint == 1）
+  // 断点恢复：跳过起手语，直接 resume + "continue"
+  let generatorMsg: string
+  if (generatorSessionId) {
+    console.log(dim('  Resuming negotiate sessions from previous run...'))
+    generatorMsg = 'Resuming. Continue refining spec.md and sprint-N.json from where you left off.'
+  } else if (previousReview) {
+    generatorMsg = `Sprint ${sprintNum} — a prior sprint failed review and we're re-negotiating. Address this feedback in spec.md / sprint-N.json:\n\n${previousReview}`
+  } else {
+    generatorMsg = `Sprint ${sprintNum}. Read the inquiry session.jsonl, then draft spec.md (product narrative) and the sprint contract at ${sprintFile} (structured execution data).`
+  }
+
+  console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('(round 1)')} ${dim('──')}`)
+  let genTurn = generatorSessionId
+    ? await runAgent('Generator', generatorMsg, { resume: generatorSessionId })
+    : await runAgent('Generator', generatorMsg, { appendSystemPrompt: generatorSystemPrompt })
+  generatorSessionId = genTurn.sessionId
+
+  // 验证 Generator 创建了 sprint 文件 + 有效 JSON
   for (let fix = 0; fix < 3; fix++) {
     if (!existsSync(sprintFile)) {
-      console.log(red(`    Sprint file not created, asking Generator to retry`))
-      gen = await runAgent('Generator', `You did not create the sprint file at ${sprintFile}. Please create it now.`, { resume: gen.sessionId })
+      console.log(red(`    Sprint file not created at ${sprintFile} — asking Generator to create.`))
+      genTurn = await runAgent('Generator',
+        `You did not create the sprint contract file at ${sprintFile}. Please create it now (along with ${specPath} if not yet written).`,
+        { resume: generatorSessionId },
+      )
+      generatorSessionId = genTurn.sessionId
       continue
     }
-    const { sprint, error } = tryLoadSprint(sprintNum)
-    if (sprint) break
+    const { sprint: s, error } = tryLoadSprint(sprintNum)
+    if (s) { sprint = s; break }
     console.log(red(`    Sprint file has invalid JSON: ${error}`))
-    console.log(dim('    Asking Generator to fix...'))
-    gen = await runAgent('Generator', `The sprint file at ${sprintFile} has invalid JSON:\n\n${error}\n\nPlease read the file, fix the JSON syntax error, and write it back.`, { resume: gen.sessionId })
+    genTurn = await runAgent('Generator',
+      `The sprint file at ${sprintFile} has invalid JSON:\n\n${error}\n\nPlease read it, fix the syntax (commonly: unescaped backslashes or quotes inside string values), and write it back.`,
+      { resume: generatorSessionId },
+    )
+    generatorSessionId = genTurn.sessionId
   }
 
-  if (!existsSync(sprintFile)) {
-    console.error(red(`\n  Negotiation failed: ${sprintFile} not created after retries`))
+  if (!sprint) {
+    console.error(red(`\n  Negotiation failed: sprint file unrecoverable after retries`))
     process.exit(1)
   }
+  const sp: Sprint = sprint!
 
-  const { sprint: initialSprint, error } = tryLoadSprint(sprintNum)
-  if (!initialSprint) {
-    console.error(red(`\n  Negotiation failed: ${sprintFile} still invalid: ${error}`))
-    process.exit(1)
-  }
+  // 写回基础字段 + Generator session id
+  if (!sp.phase) sp.phase = 'negotiate'
+  if (inquiryPath && sp.inquiryPath !== inquiryPath) sp.inquiryPath = inquiryPath
+  sp.negotiateGeneratorSessionId = generatorSessionId
+  writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
 
-  let sprintDirty = false
-  if (!initialSprint.phase) {
-    initialSprint.phase = 'negotiate'
-    sprintDirty = true
-  }
-  if (inquiryPath && initialSprint.inquiryPath !== inquiryPath) {
-    initialSprint.inquiryPath = inquiryPath
-    sprintDirty = true
-  }
-  if (sprintDirty) {
-    writeFileSync(sprintFile, JSON.stringify(initialSprint, null, 2))
-  }
+  let evaluatorMsg = genTurn.result || '(Generator produced no plain-text reply this turn — please go read spec.md and sprint-N.json directly to see what was changed.)'
 
-  // Generator ↔ Evaluator 对话协商
-  let generatorSaid = gen.result
-  let evalSessionId = ''
-
+  // ─── Round trip 循环 ───
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
-    const evalPrompt = loadPrompt('negotiate/evaluator', {
-      sprintFile, generatorResponse: generatorSaid, principles, inquiryReference,
+    console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim(`(round ${round})`)} ${dim('──')}`)
+
+    const evalResult = await runAgentExpectStructured('Evaluator', evaluatorMsg, NEGOTIATE_APPROVAL_SCHEMA, {
+      label: `Evaluator round ${round}`,
+      ...(evaluatorSessionId ? { resume: evaluatorSessionId } : { appendSystemPrompt: evaluatorSystemPrompt }),
     })
-    if (evalSessionId) {
-      console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim('──')}`)
-    }
-    const evalResult = evalSessionId
-      ? await runAgent('Evaluator', evalPrompt, { resume: evalSessionId, outputFormat: CONTRACT_REVIEW_SCHEMA, silent: true })
-      : await runAgent('Evaluator', evalPrompt, { outputFormat: CONTRACT_REVIEW_SCHEMA })
-    evalSessionId = evalResult.sessionId
-    const { structured, result: evaluatorSaid } = evalResult
+    evaluatorSessionId = evalResult.sessionId
+    sp.negotiateEvaluatorSessionId = evaluatorSessionId
+    writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
 
-    const review = parseReview(structured)
-    if (!review) {
-      console.log(dim('    Could not parse review, retrying...'))
-      continue
-    }
+    const approved = evalResult.structured?.approved === true
+    console.log(`    ${approved ? green('✓ approved') : yellow('✗ needs-revision')}`)
 
-    printReview(review)
-
-    if (review.approved) {
+    if (approved) {
       console.log(green(`\n  Sprint Contract agreed (round ${round})`))
       break
     }
 
-    if (round < config.maxNegotiateRounds) {
-      console.log(`\n    ${yellow('Discussion')} ${dim(`round ${round}/${config.maxNegotiateRounds}`)}`)
-      const revisePrompt = loadPrompt('negotiate/generator-revise', {
-        ...contractVars, feedback: formatReviewFeedback(review), evaluatorReasoning: evaluatorSaid,
-      })
-      console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
-      const genResponse = await runAgent('Generator', revisePrompt, { resume: gen.sessionId, silent: true })
-      generatorSaid = genResponse.result
+    if (round >= config.maxNegotiateRounds) {
+      console.error(red(`\n  Negotiation exhausted ${config.maxNegotiateRounds} rounds without approval. Manual intervention needed.`))
+      process.exit(1)
     }
+
+    // Generator 下一轮：把 Evaluator 的自由文本作为 user message 注入
+    const evalText = evalResult.result || '(Evaluator produced no plain-text reply this turn — only the structured verdict.)'
+    console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim(`(round ${round + 1})`)} ${dim('──')}`)
+    genTurn = await runAgent('Generator', evalText, { resume: generatorSessionId })
+    generatorSessionId = genTurn.sessionId
+    sp.negotiateGeneratorSessionId = generatorSessionId
+    writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
+    evaluatorMsg = genTurn.result || '(Generator produced no plain-text reply this turn — please re-read spec.md and sprint-N.json to see what changed.)'
   }
 
-  // 协商结束后，验证 sprint 文件可读
-  let finalSprint = tryLoadSprint(sprintNum)
-  if (!finalSprint.sprint) {
-    console.log(red(`    Sprint file has invalid JSON after negotiation: ${finalSprint.error}`))
-    console.log(dim('    Asking Generator to fix...'))
-    await runAgent('Generator',
-      `The sprint contract at ${sprintFile} has invalid JSON:\n\n${finalSprint.error}\n\nPlease read the file, fix the JSON syntax error (common issues: unescaped backslashes or quotes inside string values), and write it back.`,
-      { resume: gen.sessionId },
-    )
-    finalSprint = tryLoadSprint(sprintNum)
-    if (!finalSprint.sprint) {
-      throw new Error(`Sprint file still invalid after fix attempt: ${finalSprint.error}`)
-    }
+  // 最终验证 sprint 文件可读
+  const finalLoad = tryLoadSprint(sprintNum)
+  if (!finalLoad.sprint) {
+    throw new Error(`Sprint file invalid after negotiation: ${finalLoad.error}`)
   }
 
-  console.log(green(`\n  Sprint ${sprintNum}: ${finalSprint.sprint.features.length} features`))
-  for (const f of finalSprint.sprint.features) console.log(`    ${dim('·')} ${f.name}`)
+  console.log(green(`\n  Sprint ${sprintNum}: ${finalLoad.sprint.features.length} features`))
+  for (const f of finalLoad.sprint.features) console.log(`    ${dim('·')} ${f.name}`)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

@@ -1,6 +1,32 @@
-# Sprint Contract Format
+# Negotiate Phase Output Format
 
-The sprint contract file defines what will be built and how it will be evaluated.
+The negotiate phase produces **two files**, with cleanly separated roles:
+
+| File | Role | Format |
+|---|---|---|
+| `spec.md` (in inquiry dir) | **Product source of truth** — what we're building, why, what's in scope, what was ruled out | Pure markdown narrative |
+| `sprint-N.json` (in progress dir) | **Controller state** — feature breakdown, review dimensions, evaluation criteria, status | Structured JSON |
+
+Keep them separate. Do not put structured data (features lists, dimensions) in `spec.md`. Do not put narrative product reasoning in `sprint-N.json`.
+
+---
+
+# Spec.md format
+
+Pure markdown. Free structure — use whatever headings make the task clearest. Cover at minimum:
+
+- **What we're building** — the underlying goal, not just the surface request
+- **In scope** — concrete boundaries
+- **Out of scope / ruled out** — directions the inquiry explicitly rejected; this prevents downstream drift, so be specific
+- **Done well** — observable signs that the task succeeded
+
+Anchor everything to the inquiry transcript. Do not invent goals the user did not voice.
+
+---
+
+# Sprint contract format
+
+The sprint contract file defines the controller state that drives implement and review phases.
 
 ## File format
 
