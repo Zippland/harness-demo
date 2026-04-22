@@ -12,6 +12,12 @@ export interface Task {
   sessionPath: string                   // .../inquiry/session.jsonl
   progressDir: string                   // .harness/tasks/<task-id>/progress/
   createdAt: string
+  // 跨 sprint 的 SDK session IDs。task 是会话生命周期的边界，所有 sprint 共享同一组
+  // session —— Generator 在不同 sprint 间继承上下文（已经做过什么、踩过什么坑）。
+  // SDK auto-compact 负责管理上下文滚动。
+  implementSessionId?: string
+  negotiateGeneratorSessionId?: string
+  negotiateEvaluatorSessionId?: string
 }
 
 // Interrogator 只负责"反问"，不再产 spec —— spec 由后续 negotiate 阶段对抗生成。
@@ -114,9 +120,12 @@ function newTask(originalTask: string): Task {
   }
 }
 
-function writeTaskMeta(task: Task): void {
-  // task 元数据写到 task 根目录下的 task.json，仅作为人工调试 / list 时的快速索引
-  // task 状态本身不存这里 —— 由文件结构隐含（见 taskStatus()）
+/**
+ * task.json：写入 task 元数据 + 跨 sprint 的 session IDs。
+ * 生命周期状态（pending/in-progress/completed）仍由文件结构隐含（见 taskStatus()），
+ * 不写在这里。session IDs 写这里，而不是 sprint 文件，是为了让所有 sprint 共享同一组 session。
+ */
+export function saveTask(task: Task): void {
   writeFileSync(resolve(taskDir(task.taskId), 'task.json'), JSON.stringify(task, null, 2))
 }
 
@@ -178,7 +187,7 @@ export async function inquire(originalTask: string): Promise<Task> {
   // 控制论意义：spec 由对抗驱动产生（negotiate Gen↔Eval），而非 Interrogator 单边压缩。
   writeFileSync(task.specPath, '')
   sessionLog.end()
-  writeTaskMeta(task)
+  saveTask(task)
 
   console.log(green(`\n  ✓ Inquiry saved: ${taskDir(task.taskId)}`))
   console.log(dim(`    session: ${task.sessionPath}`))
@@ -202,7 +211,7 @@ export function createDirectTask(originalTask: string): Task {
     content: 'Direct mode — no interactive inquiry. The user message above is the task verbatim. Generator should treat it as the seed for spec.md.',
   }) + '\n'
   writeFileSync(task.sessionPath, sessionSeed)
-  writeTaskMeta(task)
+  saveTask(task)
 
   return task
 }
@@ -227,7 +236,7 @@ export function taskStatus(taskId: string): 'pending' | 'in-progress' | 'complet
   }
 }
 
-function loadTaskMeta(taskId: string): Task | null {
+export function loadTask(taskId: string): Task | null {
   const metaPath = resolve(taskDir(taskId), 'task.json')
   if (!existsSync(metaPath)) return null
   try {
@@ -241,7 +250,7 @@ export function listTasks(): Task[] {
   if (!existsSync(TASKS_DIR)) return []
   return readdirSync(TASKS_DIR)
     .filter((d) => d.startsWith('task-'))
-    .map((d) => loadTaskMeta(d))
+    .map((d) => loadTask(d))
     .filter((t): t is Task => t !== null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }

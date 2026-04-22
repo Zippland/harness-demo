@@ -28,9 +28,7 @@ export interface Sprint {
   context?: string
   previousReview?: string
   features: Feature[]
-  negotiateGeneratorSessionId?: string  // negotiate Generator session，断点恢复用
-  negotiateEvaluatorSessionId?: string  // negotiate Evaluator session，断点恢复用
-  implementSessionId?: string           // implement 阶段共享 session，断点恢复用
+  // SDK session IDs 不再存这里 —— 已上移到 Task（task.json），让所有 sprint 共享同一组 session。
 }
 
 export interface ReviewResult {

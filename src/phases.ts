@@ -3,7 +3,7 @@ import { resolve } from 'path'
 import { execSync } from 'child_process'
 import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR, inquiryDirFor } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
-import { referenceFromInquiryDir, inquiryPaths } from './inquire.js'
+import { referenceFromInquiryDir, inquiryPaths, loadTask, saveTask } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation, ensureProgressDir } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview, Sprint } from './types.js'
@@ -134,25 +134,35 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
   const generatorSystemPrompt = loadPrompt('negotiate/generator-system', promptVars)
   const evaluatorSystemPrompt = loadPrompt('negotiate/evaluator-system', promptVars)
 
-  // 加载 sprint 文件骨架（如果存在）—— 用于断点恢复读 sessionId
+  // 加载 task —— session IDs 是 task 级状态，跨 sprint 共享。
+  const task = loadTask(taskId)
+  if (!task) {
+    console.error(red(`\n  Task metadata missing for ${taskId} (no task.json)`))
+    process.exit(1)
+  }
+  const t = task!
+
+  // 加载 sprint 文件骨架（如果存在）—— 仅用于判断"是不是 mid-sprint 中断恢复"
   let sprint: Sprint | null = null
   if (existsSync(sprintFile)) {
     const loaded = tryLoadSprint(taskId, sprintNum)
     if (loaded.sprint) sprint = loaded.sprint
   }
 
-  let generatorSessionId: string | undefined = sprint?.negotiateGeneratorSessionId
-  let evaluatorSessionId: string | undefined = sprint?.negotiateEvaluatorSessionId
+  let generatorSessionId: string | undefined = t.negotiateGeneratorSessionId
+  let evaluatorSessionId: string | undefined = t.negotiateEvaluatorSessionId
 
   // ─── Generator round 1 起手 ───
-  // 全新：previousReview（sprint > 1）或 fresh draft（sprint == 1）
-  // 断点恢复：跳过起手语，直接 resume + "continue"
+  // 三种情形（独立于 session 是否已存在）：
+  //   a) 第一次（sprint 1，task 还没 session）：全新起手，让 Generator 读 inquiry 起草
+  //   b) Mid-sprint 中断恢复（sprint 文件已存在且未完成）：让 Generator continue
+  //   c) 新 sprint 但 session 已存在（sprint > 1，前一轮 review 不通过）：注入 previousReview，但延续旧 session
   let generatorMsg: string
-  if (generatorSessionId) {
-    console.log(dim('  Resuming negotiate sessions from previous run...'))
+  if (sprint && generatorSessionId) {
+    console.log(dim('  Resuming mid-sprint negotiate from previous run...'))
     generatorMsg = 'Resuming. Continue refining spec.md and sprint-N.json from where you left off.'
   } else if (previousReview) {
-    generatorMsg = `Sprint ${sprintNum} — a prior sprint failed review and we're re-negotiating. Address this feedback in spec.md / sprint-N.json:\n\n${previousReview}`
+    generatorMsg = `Sprint ${sprintNum} — a prior sprint failed review and we're re-negotiating. Address this feedback in spec.md / ${sprintFile}:\n\n${previousReview}\n\nThe previous sprint files are in progress/; you can read them to recall what was tried.`
   } else {
     generatorMsg = `Sprint ${sprintNum}. Read the inquiry session.jsonl, then draft spec.md (product narrative) and the sprint contract at ${sprintFile} (structured execution data).`
   }
@@ -162,6 +172,8 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
     ? await runAgent('Generator', generatorMsg, { resume: generatorSessionId })
     : await runAgent('Generator', generatorMsg, { appendSystemPrompt: generatorSystemPrompt })
   generatorSessionId = genTurn.sessionId
+  t.negotiateGeneratorSessionId = generatorSessionId
+  saveTask(t)
 
   // 验证 Generator 创建了 sprint 文件 + 有效 JSON
   for (let fix = 0; fix < 3; fix++) {
@@ -172,6 +184,8 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
         { resume: generatorSessionId },
       )
       generatorSessionId = genTurn.sessionId
+      t.negotiateGeneratorSessionId = generatorSessionId
+      saveTask(t)
       continue
     }
     const { sprint: s, error } = tryLoadSprint(taskId, sprintNum)
@@ -182,6 +196,8 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
       { resume: generatorSessionId },
     )
     generatorSessionId = genTurn.sessionId
+    t.negotiateGeneratorSessionId = generatorSessionId
+    saveTask(t)
   }
 
   if (!sprint) {
@@ -190,10 +206,9 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
   }
   const sp: Sprint = sprint!
 
-  // 写回基础字段 + Generator session id
+  // 写回基础字段（session IDs 已上移到 task.json，此处不再存）
   if (!sp.phase) sp.phase = 'negotiate'
   if (sp.taskId !== taskId) sp.taskId = taskId
-  sp.negotiateGeneratorSessionId = generatorSessionId
   writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
 
   let evaluatorMsg = genTurn.result || '(Generator produced no plain-text reply this turn — please go read spec.md and sprint-N.json directly to see what was changed.)'
@@ -207,8 +222,8 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
       ...(evaluatorSessionId ? { resume: evaluatorSessionId } : { appendSystemPrompt: evaluatorSystemPrompt }),
     })
     evaluatorSessionId = evalResult.sessionId
-    sp.negotiateEvaluatorSessionId = evaluatorSessionId
-    writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
+    t.negotiateEvaluatorSessionId = evaluatorSessionId
+    saveTask(t)
 
     const approved = evalResult.structured?.approved === true
     console.log(`    ${approved ? green('✓ approved') : yellow('✗ needs-revision')}`)
@@ -228,8 +243,8 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
     console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim(`(round ${round + 1})`)} ${dim('──')}`)
     genTurn = await runAgent('Generator', evalText, { resume: generatorSessionId })
     generatorSessionId = genTurn.sessionId
-    sp.negotiateGeneratorSessionId = generatorSessionId
-    writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
+    t.negotiateGeneratorSessionId = generatorSessionId
+    saveTask(t)
     evaluatorMsg = genTurn.result || '(Generator produced no plain-text reply this turn — please re-read spec.md and sprint-N.json to see what changed.)'
   }
 
@@ -249,6 +264,12 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
 
 export async function implement(taskId: string, sprintNum: number): Promise<void> {
   const sprint = loadSprint(taskId, sprintNum)
+  const task = loadTask(taskId)
+  if (!task) {
+    console.error(red(`\n  Task metadata missing for ${taskId} (no task.json)`))
+    process.exit(1)
+  }
+  const t = task!
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const { specPath, sessionPath } = inquiryPaths(inquiryDirFor(taskId))
   const total = sprint.features.length
@@ -256,11 +277,13 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
 
   console.log(bold(`\n  ══ IMPLEMENT — Sprint ${sprintNum} ══  ${pending.length} features\n`))
 
-  // implement 阶段所有 feature 共享同一个 session：人格/约束/principles/inquiry 路径
-  // 沉到 systemPrompt（永驻、不被 compact），由 SDK auto-compact 管理上下文滚动。
-  // spec.md / session.jsonl 只传路径，prompt 自己写"按需 Read"的说明 —— 不内联避免每 feature 重复。
+  // implement 阶段所有 sprint × 所有 feature 共享同一个 Generator session：
+  //   - 人格/约束/principles/inquiry 路径沉到 systemPrompt（永驻、不被 compact）
+  //   - Session 生命周期锚定在 task 级（task.implementSessionId），跨 sprint 延续
+  //   - SDK auto-compact 管理上下文滚动
+  //   - spec.md / session.jsonl 只传路径，prompt 自己写"按需 Read"的说明
   const systemPrompt = loadPrompt('implement/generator-system', { principles, specPath, sessionPath })
-  let sharedSessionId: string | undefined = sprint.implementSessionId
+  let sharedSessionId: string | undefined = t.implementSessionId
 
   for (let i = 0; i < sprint.features.length; i++) {
     const feature = sprint.features[i]
@@ -281,9 +304,9 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
     const featureResult = await runAgent('Generator', prompt, opts)
     sharedSessionId = featureResult.sessionId
 
-    if (sprint.implementSessionId !== sharedSessionId) {
-      sprint.implementSessionId = sharedSessionId
-      writeFileSync(sprintPath(taskId, sprintNum), JSON.stringify(sprint, null, 2))
+    if (t.implementSessionId !== sharedSessionId) {
+      t.implementSessionId = sharedSessionId
+      saveTask(t)
     }
 
     const eval_ = parseEvaluation(feature.evaluation)
@@ -304,12 +327,15 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
           console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
           const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output }), { resume: sharedSessionId, silent: true })
           sharedSessionId = retryResult.sessionId
+          if (t.implementSessionId !== sharedSessionId) {
+            t.implementSessionId = sharedSessionId
+            saveTask(t)
+          }
         }
       }
     }
 
     feature.status = passed ? 'passing' : 'failing'
-    sprint.implementSessionId = sharedSessionId
     writeFileSync(sprintPath(taskId, sprintNum), JSON.stringify(sprint, null, 2))
     if (!passed) console.log(`    ${red('L1 gave up')}`)
   }
