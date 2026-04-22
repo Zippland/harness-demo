@@ -1,15 +1,16 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync, createWriteStream, type WriteStream } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, createWriteStream, type WriteStream } from 'fs'
 import { resolve } from 'path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import { config, WORK_DIR, INQUIRY_DIR, PENDING_DIR, COMPLETED_DIR, PROGRESS_DIR, PROMPTS_DIR } from './config.js'
+import { config, WORK_DIR, TASKS_DIR, taskDir, inquiryDirFor, progressDirFor, PROMPTS_DIR } from './config.js'
 import { bold, dim, green, cyan, startSpinner } from './ui.js'
 
-export interface PendingTask {
+export interface Task {
   taskId: string
   originalTask: string
-  inquiryDir: string
-  specPath: string
-  sessionPath: string
+  inquiryDir: string                    // .harness/tasks/<task-id>/inquiry/
+  specPath: string                      // .../inquiry/spec.md
+  sessionPath: string                   // .../inquiry/session.jsonl
+  progressDir: string                   // .harness/tasks/<task-id>/progress/
   createdAt: string
 }
 
@@ -94,19 +95,35 @@ async function runInterrogatorTurn(
   return { sessionId: newSessionId, text: finalText, structured }
 }
 
-export async function inquire(originalTask: string): Promise<PendingTask> {
-  mkdirSync(INQUIRY_DIR, { recursive: true })
-  mkdirSync(PENDING_DIR, { recursive: true })
-
+function newTask(originalTask: string): Task {
   const ts = Date.now()
   const taskId = `task-${ts}`
-  const inquiryDir = resolve(INQUIRY_DIR, taskId)
+  const inquiryDir = inquiryDirFor(taskId)
+  const progressDir = progressDirFor(taskId)
   mkdirSync(inquiryDir, { recursive: true })
-  const specPath = resolve(inquiryDir, 'spec.md')
-  const sessionPath = resolve(inquiryDir, 'session.jsonl')
-  const pendingPath = resolve(PENDING_DIR, `${taskId}.json`)
+  mkdirSync(progressDir, { recursive: true })
+  return {
+    taskId,
+    originalTask,
+    inquiryDir,
+    specPath: resolve(inquiryDir, 'spec.md'),
+    sessionPath: resolve(inquiryDir, 'session.jsonl'),
+    progressDir,
+    createdAt: new Date().toISOString(),
+  }
+}
 
-  const sessionLog = createWriteStream(sessionPath, { flags: 'a' })
+function writeTaskMeta(task: Task): void {
+  // task 元数据写到 task 根目录下的 task.json，仅作为人工调试 / list 时的快速索引
+  // task 状态本身不存这里 —— 由文件结构隐含（见 taskStatus()）
+  writeFileSync(resolve(taskDir(task.taskId), 'task.json'), JSON.stringify(task, null, 2))
+}
+
+export async function inquire(originalTask: string): Promise<Task> {
+  mkdirSync(TASKS_DIR, { recursive: true })
+  const task = newTask(originalTask)
+
+  const sessionLog = createWriteStream(task.sessionPath, { flags: 'a' })
 
   // 首轮 setup：role 和 originalTask 分两条事件记录
   const roleText = readFileSync(resolve(PROMPTS_DIR, 'inquire/interrogator.md'), 'utf-8').trim()
@@ -118,6 +135,7 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
   const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res))
 
   console.log(bold('\n  ══ INQUIRY ══\n'))
+  console.log(dim(`  Task: ${task.taskId}`))
   console.log(dim('  Talk with the Interrogator to surface what this task really is.'))
   console.log(dim('  Interrogator only asks — never writes the spec.'))
   console.log(dim('  Type /done when you feel enough has been surfaced.\n'))
@@ -157,101 +175,90 @@ export async function inquire(originalTask: string): Promise<PendingTask> {
 
   // spec.md 留作空占位文件，由后续 negotiate 阶段的 Generator 填入。
   // 控制论意义：spec 由对抗驱动产生（negotiate Gen↔Eval），而非 Interrogator 单边压缩。
-  writeFileSync(specPath, '')
+  writeFileSync(task.specPath, '')
   sessionLog.end()
+  writeTaskMeta(task)
 
-  const pending: PendingTask = {
-    taskId,
-    originalTask,
-    inquiryDir,
-    specPath,
-    sessionPath,
-    createdAt: new Date().toISOString(),
-  }
-  writeFileSync(pendingPath, JSON.stringify(pending, null, 2))
-
-  console.log(green(`\n  ✓ Inquiry saved:`))
-  console.log(dim(`    session: ${sessionPath}`))
-  console.log(dim(`    spec:    ${specPath} (empty placeholder — Generator/Evaluator will fill it during negotiate)`))
+  console.log(green(`\n  ✓ Inquiry saved: ${taskDir(task.taskId)}`))
+  console.log(dim(`    session: ${task.sessionPath}`))
+  console.log(dim(`    spec:    ${task.specPath} (empty placeholder — Generator/Evaluator will fill it during negotiate)`))
   console.log(dim(`  Run 'harness execute' to start autonomous execution.\n`))
-  return pending
+  return task
 }
 
-export function createDirectPending(originalTask: string): PendingTask {
-  mkdirSync(INQUIRY_DIR, { recursive: true })
-  mkdirSync(PENDING_DIR, { recursive: true })
-  const ts = Date.now()
-  const taskId = `direct-${ts}`
-  const inquiryDir = resolve(INQUIRY_DIR, taskId)
-  mkdirSync(inquiryDir, { recursive: true })
-  const specPath = resolve(inquiryDir, 'spec.md')
-  const sessionPath = resolve(inquiryDir, 'session.jsonl')
+export function createDirectTask(originalTask: string): Task {
+  mkdirSync(TASKS_DIR, { recursive: true })
+  const task = newTask(originalTask)
 
   // spec.md 留空，由 negotiate 阶段填入。direct mode 把原始 task 写进 session 让 Generator 看到。
-  writeFileSync(specPath, '')
+  writeFileSync(task.specPath, '')
 
+  const ts = Date.now()
   const sessionSeed = JSON.stringify({
-    ts,
-    role: 'user',
-    content: originalTask,
+    ts, role: 'user', content: originalTask,
   }) + '\n' + JSON.stringify({
-    ts,
-    role: 'system',
+    ts, role: 'system',
     content: 'Direct mode — no interactive inquiry. The user message above is the task verbatim. Generator should treat it as the seed for spec.md.',
   }) + '\n'
-  writeFileSync(sessionPath, sessionSeed)
+  writeFileSync(task.sessionPath, sessionSeed)
+  writeTaskMeta(task)
 
-  const pending: PendingTask = {
-    taskId,
-    originalTask,
-    inquiryDir,
-    specPath,
-    sessionPath,
-    createdAt: new Date().toISOString(),
-  }
-  writeFileSync(resolve(PENDING_DIR, `${taskId}.json`), JSON.stringify(pending, null, 2))
-  return pending
+  return task
 }
 
-export function listPending(): PendingTask[] {
-  if (!existsSync(PENDING_DIR)) return []
-  return readdirSync(PENDING_DIR)
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => JSON.parse(readFileSync(resolve(PENDING_DIR, f), 'utf-8')) as PendingTask)
+/**
+ * 推断 task 当前生命周期状态。基于文件结构判断，无 status 字段：
+ * - completed: 最新 sprint 的 phase === 'done'
+ * - in-progress: 有 sprint 文件但最新 phase !== 'done'
+ * - pending: 没 sprint 文件
+ */
+export function taskStatus(taskId: string): 'pending' | 'in-progress' | 'completed' {
+  const progressDir = progressDirFor(taskId)
+  if (!existsSync(progressDir)) return 'pending'
+  const files = readdirSync(progressDir).filter((f) => /^sprint-\d+\.json$/.test(f))
+  if (files.length === 0) return 'pending'
+  const latest = Math.max(...files.map((f) => parseInt(f.match(/\d+/)![0])))
+  try {
+    const sprint = JSON.parse(readFileSync(resolve(progressDir, `sprint-${latest}.json`), 'utf-8'))
+    return sprint.phase === 'done' ? 'completed' : 'in-progress'
+  } catch {
+    return 'in-progress'
+  }
+}
+
+function loadTaskMeta(taskId: string): Task | null {
+  const metaPath = resolve(taskDir(taskId), 'task.json')
+  if (!existsSync(metaPath)) return null
+  try {
+    return JSON.parse(readFileSync(metaPath, 'utf-8')) as Task
+  } catch {
+    return null
+  }
+}
+
+export function listTasks(): Task[] {
+  if (!existsSync(TASKS_DIR)) return []
+  return readdirSync(TASKS_DIR)
+    .filter((d) => d.startsWith('task-'))
+    .map((d) => loadTaskMeta(d))
+    .filter((t): t is Task => t !== null)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 }
 
-export function consumePending(taskId?: string): PendingTask | null {
-  const pendings = listPending()
-  if (pendings.length === 0) return null
-  if (!taskId) return pendings[0]
-  return pendings.find((p) => p.taskId === taskId) ?? null
+export function listPendingTasks(): Task[] {
+  return listTasks().filter((t) => taskStatus(t.taskId) === 'pending')
 }
 
-export function archiveTask(taskId: string, pending: PendingTask): void {
-  mkdirSync(COMPLETED_DIR, { recursive: true })
-  const archiveDir = resolve(COMPLETED_DIR, taskId)
-  mkdirSync(archiveDir, { recursive: true })
-
-  if (existsSync(pending.specPath)) {
-    writeFileSync(resolve(archiveDir, 'spec.md'), readFileSync(pending.specPath, 'utf-8'))
-  }
-  if (existsSync(pending.sessionPath)) {
-    writeFileSync(resolve(archiveDir, 'session.jsonl'), readFileSync(pending.sessionPath, 'utf-8'))
-  }
-
-  if (existsSync(PROGRESS_DIR)) {
-    for (const f of readdirSync(PROGRESS_DIR)) {
-      if (f.startsWith('sprint-') && f.endsWith('.json')) {
-        const src = resolve(PROGRESS_DIR, f)
-        writeFileSync(resolve(archiveDir, f), readFileSync(src, 'utf-8'))
-        unlinkSync(src)
-      }
-    }
-  }
-
-  const pendingFile = resolve(PENDING_DIR, `${taskId}.json`)
-  if (existsSync(pendingFile)) unlinkSync(pendingFile)
+/**
+ * 选一个 task 执行。指定 taskId 就找它；不指定则优先选 in-progress（断点恢复），
+ * 没有再选最新 pending。
+ */
+export function pickTaskToExecute(taskId?: string): Task | null {
+  const all = listTasks()
+  if (taskId) return all.find((t) => t.taskId === taskId) ?? null
+  const inProgress = all.find((t) => taskStatus(t.taskId) === 'in-progress')
+  if (inProgress) return inProgress
+  return all.find((t) => taskStatus(t.taskId) === 'pending') ?? null
 }
 
 export function buildInquiryReference(specPath?: string, sessionPath?: string): string {
@@ -307,4 +314,3 @@ export function inquiryPaths(inquiryDir?: string): { specPath: string; sessionPa
     sessionPath: resolve(inquiryDir, 'session.jsonl'),
   }
 }
-

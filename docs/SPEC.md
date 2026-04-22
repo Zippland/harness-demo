@@ -229,9 +229,9 @@ feature 3: resume sharedSessionId
 ```typescript
 interface Sprint {
   sprint: number                    // Sprint 序号
+  taskId: string                    // 所属 task ID（冗余存储，便于人工调试）
   task: string                      // 原始任务描述
   phase: 'negotiate' | 'implement' | 'review' | 'done'
-  inquiryPath?: string              // 指向 .harness/inquiry/task-<ts>/ 的目录
   reviewDimensions: ReviewDimension[]  // M 个评审维度
   context?: string                  // 任务上下文
   previousReview?: string           // 上一轮的评审反馈
@@ -461,37 +461,42 @@ harness-demo/
 │   ├── inquire/             # Inquiry 阶段提示词
 │   │   └── interrogator.md
 │   ├── negotiate/           # 协商阶段提示词
-│   │   ├── generator.md
-│   │   ├── generator-revise.md
-│   │   └── evaluator.md
+│   │   ├── generator-system.md
+│   │   └── evaluator-system.md
 │   ├── implement/           # 实现阶段提示词
-│   │   ├── generator.md
-│   │   ├── generator-retry.md
-│   │   └── generator-summary.md
+│   │   ├── generator-system.md
+│   │   ├── generator-feature.md
+│   │   └── generator-retry.md
 │   └── review/              # 审查阶段提示词
 │       ├── reviewer.md
 │       └── holistic.md
 ├── control/
 │   ├── golden-principles.md # 项目开发与研究原则
-│   └── contract-format.md   # Sprint 合约格式说明
+│   └── contract-format.md   # spec.md + sprint-N.json 双产出格式说明
 └── .harness/
-    ├── inquiry/             # 所有 discovery 产物，永不删
-    │   └── task-<ts>/
-    │       ├── session.jsonl  # 全量 agent session（每行一条 message）
-    │       └── spec.md        # Interrogator 产出的压缩 markdown spec
-    ├── pending/             # 已 discover 待 execute
-    │   └── task-<ts>.json   # { inquiryDir, specPath, sessionPath, ... }
-    ├── progress/            # 正在 execute 的 sprint 文件
-    │   ├── sprint-1.json
-    │   └── ...
-    └── completed/           # execute 完成归档
+    ├── config.json          # 项目级配置（可选）
+    ├── golden-principles.md # 项目级原则覆盖（可选）
+    └── tasks/               # 所有 task，每个完整隔离，永久保留
         └── task-<ts>/
-            ├── spec.md (copy)
-            ├── session.jsonl (copy)
-            └── sprint-*.json
+            ├── task.json    # task 元数据：taskId, originalTask, createdAt 等
+            ├── inquiry/
+            │   ├── session.jsonl  # inquiry 阶段对话流（jsonl，每行一条 message）
+            │   └── spec.md        # negotiate 阶段填入的产品事实源（markdown）
+            └── progress/
+                ├── sprint-1.json
+                ├── sprint-2.json
+                └── ...
 ```
 
-`src/inquire.ts` 管理 Phase -1 的对话循环和 pending/completed 生命周期。每个 task 对应一个 `inquiry/task-<ts>/` 目录，包含 **session.jsonl**（原始流）和 **spec.md**（压缩叙述）。
+**task 隔离**：每个 `harness "<task>"` 运行创建一个独立的 `task-<ts>/` 目录。多个 task 永远不会共享文件、永远不会冲突。`task.json` 是 task 元数据快照（人/工具调试用），状态由文件结构隐含判断（无 status 字段）：
+
+| 状态 | 判断条件 |
+|---|---|
+| **pending** | `progress/` 不存在或无 sprint 文件 |
+| **in-progress** | 有 sprint 文件但最新的 `phase !== 'done'` |
+| **completed** | 最新 sprint 的 `phase === 'done'` |
+
+`src/inquire.ts` 管理 Phase -1 对话循环 + task 生命周期工具函数（`taskStatus`, `listTasks`, `listPendingTasks`, `pickTaskToExecute`）。每个 task 对应一个 `tasks/task-<ts>/` 目录，包含 **inquiry/session.jsonl**（原始流）和 **inquiry/spec.md**（negotiate 后的产品事实源）。**没有 archive 动作** —— task 完成后文件原地保留。
 
 ---
 

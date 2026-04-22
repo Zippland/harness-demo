@@ -1,6 +1,5 @@
 /**
- * 重置 demo 状态，允许用新任务重新开始。
- * 清除所有 sprint 文件和 agent 生成的产物。
+ * 重置 demo 状态：删除 .harness/tasks/ 下所有 task 目录 + 重置 project 存根。
  */
 
 import { writeFileSync, rmSync, existsSync, readdirSync } from 'fs'
@@ -8,31 +7,36 @@ import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
 const ROOT = dirname(fileURLToPath(import.meta.url))
-const PROGRESS_DIR = resolve(ROOT, 'progress')
+const TASKS_DIR = resolve(ROOT, '.harness/tasks')
 
-// 清除所有 sprint 文件
-if (existsSync(PROGRESS_DIR)) {
-  const files = readdirSync(PROGRESS_DIR).filter(f => f.endsWith('.json'))
-  for (const f of files) {
-    rmSync(resolve(PROGRESS_DIR, f))
-  }
-  console.log(`✓ Removed ${files.length} sprint file(s)`)
+if (existsSync(TASKS_DIR)) {
+  const entries = readdirSync(TASKS_DIR)
+  rmSync(TASKS_DIR, { recursive: true, force: true })
+  console.log(`✓ Removed ${entries.length} task(s) from .harness/tasks/`)
 } else {
-  console.log('✓ No sprint files to remove')
+  console.log('✓ No tasks to remove')
 }
 
-// 清除旧的 progress.json（兼容）
-if (existsSync(resolve(ROOT, 'progress.json'))) {
-  rmSync(resolve(ROOT, 'progress.json'))
-  console.log('✓ Removed legacy progress.json')
+// 旧 layout 兼容：如果还有遗留的 .harness/{inquiry,pending,progress,completed}/，一并清掉
+for (const old of ['inquiry', 'pending', 'progress', 'completed']) {
+  const oldDir = resolve(ROOT, '.harness', old)
+  if (existsSync(oldDir)) {
+    rmSync(oldDir, { recursive: true, force: true })
+    console.log(`✓ Removed legacy .harness/${old}/`)
+  }
 }
 
-// 清除 agent 写的代码和测试
+// 清除 agent 写的代码和测试（demo 项目特有）
 const stub = `// Waiting for harness to scaffold this project.\n`
-writeFileSync(resolve(ROOT, 'project/src/index.ts'), stub)
-console.log('✓ Reset project/src/index.ts')
-
-writeFileSync(resolve(ROOT, 'project/tests/index.test.ts'), stub)
-console.log('✓ Reset project/tests/index.test.ts')
+const projectSrc = resolve(ROOT, 'project/src/index.ts')
+const projectTest = resolve(ROOT, 'project/tests/index.test.ts')
+if (existsSync(projectSrc)) {
+  writeFileSync(projectSrc, stub)
+  console.log('✓ Reset project/src/index.ts')
+}
+if (existsSync(projectTest)) {
+  writeFileSync(projectTest, stub)
+  console.log('✓ Reset project/tests/index.test.ts')
+}
 
 console.log('\nReady. Run: npm start "<your task>"')

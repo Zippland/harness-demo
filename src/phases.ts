@@ -1,10 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
-import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR } from './config.js'
+import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR, inquiryDirFor } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
 import { referenceFromInquiryDir, inquiryPaths } from './inquire.js'
-import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation } from './sprint.js'
+import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation, ensureProgressDir } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, progressBar } from './ui.js'
 import type { ReviewResult, SingleReview, Sprint } from './types.js'
 
@@ -118,13 +118,14 @@ async function runAgentExpectStructured(
 // Phase 0: negotiate
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function negotiate(sprintNum: number, previousReview?: string, inquiryPath?: string): Promise<void> {
+export async function negotiate(taskId: string, sprintNum: number, previousReview?: string): Promise<void> {
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
 
+  ensureProgressDir(taskId)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
   const contractFormat = readFileSync(resolve(TOOL_DIR, 'control/contract-format.md'), 'utf-8')
-  const sprintFile = sprintPath(sprintNum)
-  const { specPath, sessionPath } = inquiryPaths(inquiryPath)
+  const sprintFile = sprintPath(taskId, sprintNum)
+  const { specPath, sessionPath } = inquiryPaths(inquiryDirFor(taskId))
 
   const promptVars = {
     specPath, sessionPath, principles, contractFormat,
@@ -136,7 +137,7 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
   // 加载 sprint 文件骨架（如果存在）—— 用于断点恢复读 sessionId
   let sprint: Sprint | null = null
   if (existsSync(sprintFile)) {
-    const loaded = tryLoadSprint(sprintNum)
+    const loaded = tryLoadSprint(taskId, sprintNum)
     if (loaded.sprint) sprint = loaded.sprint
   }
 
@@ -173,7 +174,7 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
       generatorSessionId = genTurn.sessionId
       continue
     }
-    const { sprint: s, error } = tryLoadSprint(sprintNum)
+    const { sprint: s, error } = tryLoadSprint(taskId, sprintNum)
     if (s) { sprint = s; break }
     console.log(red(`    Sprint file has invalid JSON: ${error}`))
     genTurn = await runAgent('Generator',
@@ -191,7 +192,7 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
 
   // 写回基础字段 + Generator session id
   if (!sp.phase) sp.phase = 'negotiate'
-  if (inquiryPath && sp.inquiryPath !== inquiryPath) sp.inquiryPath = inquiryPath
+  if (sp.taskId !== taskId) sp.taskId = taskId
   sp.negotiateGeneratorSessionId = generatorSessionId
   writeFileSync(sprintFile, JSON.stringify(sp, null, 2))
 
@@ -233,7 +234,7 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
   }
 
   // 最终验证 sprint 文件可读
-  const finalLoad = tryLoadSprint(sprintNum)
+  const finalLoad = tryLoadSprint(taskId, sprintNum)
   if (!finalLoad.sprint) {
     throw new Error(`Sprint file invalid after negotiation: ${finalLoad.error}`)
   }
@@ -246,10 +247,10 @@ export async function negotiate(sprintNum: number, previousReview?: string, inqu
 // Phase 1: implement
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function implement(sprintNum: number): Promise<void> {
-  const sprint = loadSprint(sprintNum)
+export async function implement(taskId: string, sprintNum: number): Promise<void> {
+  const sprint = loadSprint(taskId, sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
-  const { specPath, sessionPath } = inquiryPaths(sprint.inquiryPath)
+  const { specPath, sessionPath } = inquiryPaths(inquiryDirFor(taskId))
   const total = sprint.features.length
   const pending = sprint.features.filter((f) => f.status !== 'passing')
 
@@ -282,7 +283,7 @@ export async function implement(sprintNum: number): Promise<void> {
 
     if (sprint.implementSessionId !== sharedSessionId) {
       sprint.implementSessionId = sharedSessionId
-      writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
+      writeFileSync(sprintPath(taskId, sprintNum), JSON.stringify(sprint, null, 2))
     }
 
     const eval_ = parseEvaluation(feature.evaluation)
@@ -309,7 +310,7 @@ export async function implement(sprintNum: number): Promise<void> {
 
     feature.status = passed ? 'passing' : 'failing'
     sprint.implementSessionId = sharedSessionId
-    writeFileSync(sprintPath(sprintNum), JSON.stringify(sprint, null, 2))
+    writeFileSync(sprintPath(taskId, sprintNum), JSON.stringify(sprint, null, 2))
     if (!passed) console.log(`    ${red('L1 gave up')}`)
   }
 
@@ -321,11 +322,11 @@ export async function implement(sprintNum: number): Promise<void> {
 // Phase 2: reviewAll (N+M parallel)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function reviewAll(sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
+export async function reviewAll(taskId: string, sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
-  const sprint = loadSprint(sprintNum)
+  const sprint = loadSprint(taskId, sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
-  const inquiryReference = referenceFromInquiryDir(sprint.inquiryPath)
+  const inquiryReference = referenceFromInquiryDir(inquiryDirFor(taskId))
 
   const reviewFns: (() => Promise<SingleReview>)[] = []
 
@@ -389,9 +390,9 @@ export async function reviewAll(sprintNum: number): Promise<{ review: ReviewResu
 // Phase 3: holisticReview
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function holisticReview(inquiryPath?: string): Promise<{ pass: boolean; feedback: string }> {
+export async function holisticReview(taskId: string): Promise<{ pass: boolean; feedback: string }> {
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
-  const inquiryReference = referenceFromInquiryDir(inquiryPath)
+  const inquiryReference = referenceFromInquiryDir(inquiryDirFor(taskId))
 
   const { structured } = await runAgentExpectStructured('Evaluator',
     loadPrompt('review/holistic', { inquiryReference }),

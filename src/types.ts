@@ -21,16 +21,16 @@ export interface ReviewDimension {
 
 export interface Sprint {
   sprint: number
-  task: string
+  taskId: string                        // 所属 task ID，sprint 文件冗余存储以便人工调试
+  task: string                          // 原始任务描述（保留向后可读）
   phase: 'negotiate' | 'implement' | 'review' | 'done'
-  inquiryPath?: string
   reviewDimensions: ReviewDimension[]
   context?: string
   previousReview?: string
   features: Feature[]
   negotiateGeneratorSessionId?: string  // negotiate Generator session，断点恢复用
   negotiateEvaluatorSessionId?: string  // negotiate Evaluator session，断点恢复用
-  implementSessionId?: string  // implement 阶段共享 session，断点恢复用
+  implementSessionId?: string           // implement 阶段共享 session，断点恢复用
 }
 
 export interface ReviewResult {

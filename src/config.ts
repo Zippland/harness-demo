@@ -5,11 +5,20 @@ import type { HarnessConfig } from './types.js'
 
 export const TOOL_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
 export const WORK_DIR = process.cwd()
-export const PROGRESS_DIR = resolve(WORK_DIR, '.harness/progress')
-export const INQUIRY_DIR = resolve(WORK_DIR, '.harness/inquiry')
-export const PENDING_DIR = resolve(WORK_DIR, '.harness/pending')
-export const COMPLETED_DIR = resolve(WORK_DIR, '.harness/completed')
+export const HARNESS_DIR = resolve(WORK_DIR, '.harness')
+export const TASKS_DIR = resolve(HARNESS_DIR, 'tasks')
 export const PROMPTS_DIR = resolve(TOOL_DIR, 'prompts')
+
+// 每个 task 在 .harness/tasks/<task-id>/ 下完整隔离，含 inquiry/ + progress/ 子目录
+export function taskDir(taskId: string): string {
+  return resolve(TASKS_DIR, taskId)
+}
+export function inquiryDirFor(taskId: string): string {
+  return resolve(taskDir(taskId), 'inquiry')
+}
+export function progressDirFor(taskId: string): string {
+  return resolve(taskDir(taskId), 'progress')
+}
 
 const LOCAL_PRINCIPLES = resolve(WORK_DIR, '.harness/golden-principles.md')
 const DEFAULT_PRINCIPLES_PATH = resolve(TOOL_DIR, 'control/golden-principles.md')
