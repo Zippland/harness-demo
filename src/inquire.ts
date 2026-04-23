@@ -65,9 +65,18 @@ async function runInterrogatorTurn(
       model: config.model,
       // Interrogator 故意不挂 mcpServers — 纯对话阶段，浏览器与"不主动探索"的设计冲突。
       allowedTools: ['Read', 'Glob', 'Grep'],
-      // 明确 disallow 掉 claude_code preset 自带但我们不想给的工具。AskUserQuestion / ExitPlanMode
-      // 不显式 disallow 的话 SDK 仍会把工具定义暴露给模型，模型会误调（用户看到一堆莫名其妙的工具名）。
-      disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead', 'AskUserQuestion', 'ExitPlanMode'],
+      // 明确 disallow 掉 claude_code preset 自带但 Interrogator 不该用的工具。不 disallow 的话 SDK 仍
+      // 把工具定义暴露给模型，模型会误调 —— 实测它会派 Task sub-agent 去执行任务，完全跑偏。
+      disallowedTools: [
+        'Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead',
+        'AskUserQuestion', 'ExitPlanMode',
+        'Task', 'TaskOutput', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'TaskStop',
+        'KillShell', 'KillBash', 'BashOutput',
+        'WebFetch', 'WebSearch',
+        'NotebookEdit', 'NotebookRead',
+        'SlashCommand',
+        'MultiEdit',
+      ],
       ...(sessionId ? { resume: sessionId } : {}),
       // 必须挂 systemPrompt 才能拿到 claude_code preset（含 cwd / 项目结构 / 环境信息）。
       // resume 模式下 SDK 会复用原 session 的 system 上下文，无需重传。
