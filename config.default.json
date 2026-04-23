@@ -3,7 +3,7 @@
   "apiBaseUrl": "",
   "apiKey": "",
   "concurrency": 4,
-  "maxSprints": 10,
+  "maxSprints": 50,
   "maxNegotiateRounds": 30,
   "maxL1Retries": 5,
   "mcpServers": {

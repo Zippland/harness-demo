@@ -397,7 +397,12 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
   const dimensionReviews = results.filter((r) => r.type === 'dimension')
   const approved = results.every((r) => r.status === 'pass')
   const overallComment = dimensionReviews.map((r) => `[${r.id}: ${r.score}/5] ${r.comment}`).join('\n')
-  const review: ReviewResult = { approved, reviews: featureReviews, overallComment }
+  const review: ReviewResult = {
+    approved,
+    reviews: featureReviews,
+    dimensionReviews: dimensionReviews.map((r) => ({ id: r.id, status: r.status, comment: r.comment })),
+    overallComment,
+  }
 
   const collectedReview = [
     '# Review Results', '',

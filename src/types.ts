@@ -34,6 +34,7 @@ export interface Sprint {
 export interface ReviewResult {
   approved: boolean
   reviews: { featureId: string; status: string; comment: string }[]
+  dimensionReviews: { id: string; status: string; comment: string }[]
   overallComment: string
 }
 

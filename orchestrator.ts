@@ -188,8 +188,9 @@ async function runExecution(task: Task): Promise<void> {
     previousReview = collectedReview
     updateSprintState(taskId, sprintNum, 'done', previousReview)
 
-    const disputeCount = (review.reviews ?? []).filter((r) => r.status === 'needs-revision').length
-    console.log(yellow(`\n  ${disputeCount} features under dispute → Sprint ${sprintNum + 1}\n`))
+    const featureDisputes = (review.reviews ?? []).filter((r) => r.status === 'needs-revision').length
+    const dimensionDisputes = (review.dimensionReviews ?? []).filter((r) => r.status === 'needs-revision').length
+    console.log(yellow(`\n  ${featureDisputes} feature(s) + ${dimensionDisputes} dimension(s) under dispute → Sprint ${sprintNum + 1}\n`))
   }
 
   console.log(yellow(`\n  Reached max sprints (${config.maxSprints}) without convergence.`))
