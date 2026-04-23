@@ -21,18 +21,24 @@ export interface Task {
 }
 
 // Interrogator 只负责"反问"，不再产 spec —— spec 由后续 negotiate 阶段对抗生成。
-// 用户用 /done 主动结束讨论。
+//
+// 终止信号设计：与 negotiate 阶段 Evaluator 的 {approved: boolean} 模式同构。
+// 每轮：free text（自由文本）= 给用户看的对话回复；structured.done = 终止 gate。
+// 二者在 SDK outputFormat 模式下天然共存 —— 模型先输出文本回复，再 emit StructuredOutput。
+// 必选 boolean 是关键：让模型可以 emit done:false 来表达"继续聊"。如果换成 string
+// (例如 reason: required)，模型被迫填值就只能选"结束"这一条出路，第一轮就崩。
+// 用户依然可以用 /done 主动结束。
 const TURN_SCHEMA = {
   type: 'json_schema' as const,
   schema: {
     type: 'object',
     properties: {
-      message: {
-        type: 'string',
-        description: 'What you want to say to the user this turn. Keep it natural — this is a conversation.',
+      done: {
+        type: 'boolean',
+        description: 'true ends the discussion. false to keep asking. Err strongly toward false — under-asking corrupts everything downstream.',
       },
     },
-    required: ['message'],
+    required: ['done'],
   },
 }
 
@@ -49,7 +55,7 @@ async function runInterrogatorTurn(
   prompt: string,
   sessionId: string | undefined,
   sessionLog: WriteStream,
-): Promise<{ sessionId: string; text: string; structured?: any }> {
+): Promise<{ sessionId: string; text: string; done: boolean }> {
   const q = query({
     prompt,
     options: {
@@ -94,12 +100,15 @@ async function runInterrogatorTurn(
     throw e
   }
 
-  const finalText = (structured?.message ?? text).trim()
+  // text = 对话回复（用户看的）；structured.done = 终止 gate。
+  const done = structured?.done === true
+  const finalText = text.trim()
   const event: Record<string, any> = { role: 'assistant', content: finalText }
   if (toolCalls.length > 0) event.tool_calls = toolCalls
+  if (done) event.done = true       // 在 transcript 里留痕：这是 Interrogator 主动收尾的最后一轮
   writeEvent(sessionLog, event)
 
-  return { sessionId: newSessionId, text: finalText, structured }
+  return { sessionId: newSessionId, text: finalText, done }
 }
 
 function newTask(originalTask: string): Task {
@@ -160,18 +169,22 @@ export async function inquire(originalTask: string): Promise<Task> {
     const stopSpinner = startSpinner('thinking...')
     let newId: string
     let text: string
-    let structured: any
+    let done: boolean
     try {
       const turn = await runInterrogatorTurn(userMessage, sessionId, sessionLog)
       newId = turn.sessionId
       text = turn.text
-      structured = turn.structured
+      done = turn.done
     } finally {
       stopSpinner()
     }
     sessionId = newId
-    const display = (structured?.message ?? text).trim()
-    for (const line of display.split('\n')) console.log(`    ${cyan('>')} ${line}`)
+    for (const line of text.split('\n')) console.log(`    ${cyan('>')} ${line}`)
+
+    if (done) {
+      console.log(green('\n  Interrogator: enough has been surfaced. Closing discussion.'))
+      break
+    }
 
     const reply = (await ask('\n  You (or /done): ')).trim()
     if (reply.toLowerCase() === '/done') {
