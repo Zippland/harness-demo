@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, create
 import { resolve } from 'path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { config, WORK_DIR, TASKS_DIR, taskDir, inquiryDirFor, progressDirFor, PROMPTS_DIR } from './config.js'
-import { bold, dim, green, cyan, startSpinner } from './ui.js'
+import { bold, dim, green, cyan, logTool } from './ui.js'
 
 export interface Task {
   taskId: string
@@ -55,6 +55,7 @@ async function runInterrogatorTurn(
   prompt: string,
   sessionId: string | undefined,
   sessionLog: WriteStream,
+  systemPromptAppend?: string,    // 仅首轮传：role 描述 + 触发 SDK claude_code preset 注入环境信息
 ): Promise<{ sessionId: string; text: string; done: boolean }> {
   const q = query({
     prompt,
@@ -64,8 +65,13 @@ async function runInterrogatorTurn(
       model: config.model,
       // Interrogator 故意不挂 mcpServers — 纯对话阶段，浏览器与"不主动探索"的设计冲突。
       allowedTools: ['Read', 'Glob', 'Grep'],
-      disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],
+      // 明确 disallow 掉 claude_code preset 自带但我们不想给的工具。AskUserQuestion / ExitPlanMode
+      // 不显式 disallow 的话 SDK 仍会把工具定义暴露给模型，模型会误调（用户看到一堆莫名其妙的工具名）。
+      disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead', 'AskUserQuestion', 'ExitPlanMode'],
       ...(sessionId ? { resume: sessionId } : {}),
+      // 必须挂 systemPrompt 才能拿到 claude_code preset（含 cwd / 项目结构 / 环境信息）。
+      // resume 模式下 SDK 会复用原 session 的 system 上下文，无需重传。
+      ...(systemPromptAppend ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend } } : {}),
       outputFormat: TURN_SCHEMA,
     },
   })
@@ -74,6 +80,9 @@ async function runInterrogatorTurn(
   let text = ''
   let structured: any
   const toolCalls: Array<{ name: string; input: any }> = []
+  // 模型 emit StructuredOutput 后，往往会在拿到 tool_result 时复述一遍刚才说的话 —— 噪声，丢弃。
+  // 一旦观察到 StructuredOutput tool_use，后续 text block 不再 print/累加。
+  let structuredEmitted = false
 
   try {
     for await (const msg of q) {
@@ -82,11 +91,21 @@ async function runInterrogatorTurn(
       }
       if (msg.type === 'assistant') {
         for (const block of ((msg as any).message?.content ?? [])) {
-          if (block.type === 'text' && block.text?.trim()) {
-            text += block.text
+          if (block.type === 'text' && block.text?.trim() && !structuredEmitted) {
+            const blockText = block.text
+            text += blockText
+            for (const line of blockText.trim().split('\n')) {
+              console.log(`    ${cyan('>')} ${line}`)
+            }
           }
           if (block.type === 'tool_use') {
             toolCalls.push({ name: block.name, input: block.input })
+            // StructuredOutput 是 SDK 内部 tool，对用户毫无信息量；只显示真正的工具调用
+            if (block.name !== 'StructuredOutput') {
+              logTool(block.name, block.input)
+            } else {
+              structuredEmitted = true
+            }
           }
         }
       }
@@ -159,29 +178,17 @@ export async function inquire(originalTask: string): Promise<Task> {
   console.log(dim('  Interrogator only asks — never writes the spec.'))
   console.log(dim('  Type /done when you feel enough has been surfaced.\n'))
 
-  // 首轮 SDK prompt = role 描述 + 原始 task，在代码里拼接
-  const firstPrompt = `${roleText}\n\n${originalTask}`
-  let userMessage = firstPrompt
+  // roleText 沉到 systemPrompt（永驻 system 层 + 触发 SDK claude_code preset 注入环境信息）。
+  // user message 只放真正的对话内容。首轮传 systemPromptAppend；后续 turn 走 resume，session 内 system 上下文已有。
+  let userMessage = originalTask
   let sessionId: string | undefined
 
   while (true) {
     console.log(`\n  ${dim('──')} ${cyan('Interrogator')} ${dim('──')}`)
-    const stopSpinner = startSpinner('thinking...')
-    let newId: string
-    let text: string
-    let done: boolean
-    try {
-      const turn = await runInterrogatorTurn(userMessage, sessionId, sessionLog)
-      newId = turn.sessionId
-      text = turn.text
-      done = turn.done
-    } finally {
-      stopSpinner()
-    }
-    sessionId = newId
-    for (const line of text.split('\n')) console.log(`    ${cyan('>')} ${line}`)
+    const turn = await runInterrogatorTurn(userMessage, sessionId, sessionLog, sessionId ? undefined : roleText)
+    sessionId = turn.sessionId
 
-    if (done) {
+    if (turn.done) {
       console.log(green('\n  Interrogator: enough has been surfaced. Closing discussion.'))
       break
     }

@@ -11,23 +11,31 @@ import type { Role } from './types.js'
 // 必须在 allowedTools 显式列出。每个启用的 server 注册一条通配。
 const mcpAllowPatterns = MCP_ENABLED_SERVERS.map((name) => `mcp__${name}__*`)
 
+// claude_code preset 自带的"交互式工具"在 harness 这种非交互流程里全是噪声 / 死锁源。
+// 不显式 disallow 的话 SDK 会把工具定义暴露给模型，模型会误调：
+//   - AskUserQuestion: 实现阶段 hang 在等用户回答
+//   - ExitPlanMode: 我们没用 plan mode
+// 所有 role 共用这个黑名单。
+const PRESET_INTERACTIVE_TOOLS = ['AskUserQuestion', 'ExitPlanMode']
+
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Generator: {
     model: config.model,
     allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead', ...mcpAllowPatterns],
+    disallowedTools: [...PRESET_INTERACTIVE_TOOLS],
     mcpServers: MCP_SERVERS,
   },
   Evaluator: {
     model: config.model,
     allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead', ...mcpAllowPatterns],
-    disallowedTools: ['Write', 'Edit', 'TodoWrite'],
+    disallowedTools: ['Write', 'Edit', 'TodoWrite', ...PRESET_INTERACTIVE_TOOLS],
     mcpServers: MCP_SERVERS,
   },
   Interrogator: {
     // 故意不挂 MCP：纯对话阶段，给浏览器违背"不主动探索"的设计。
     model: config.model,
     allowedTools: ['Read', 'Glob', 'Grep'],
-    disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead'],
+    disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead', ...PRESET_INTERACTIVE_TOOLS],
   },
 }
 
