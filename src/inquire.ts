@@ -63,16 +63,17 @@ async function runInterrogatorTurn(
       cwd: WORK_DIR,
       permissionMode: 'acceptEdits' as const,
       model: config.model,
-      // Interrogator 故意不挂 mcpServers — 纯对话阶段，浏览器与"不主动探索"的设计冲突。
-      allowedTools: ['Read', 'Glob', 'Grep'],
-      // 明确 disallow 掉 claude_code preset 自带但 Interrogator 不该用的工具。不 disallow 的话 SDK 仍
-      // 把工具定义暴露给模型，模型会误调 —— 实测它会派 Task sub-agent 去执行任务，完全跑偏。
+      // 研究类工具（Read/Glob/Grep/WebFetch/WebSearch）开放 —— Interrogator 问出好问题前可能
+      // 需要看代码、查文档、查参考资料。
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'],
+      // 明确 disallow 掉 claude_code preset 里 Interrogator 不该用的：写文件 / 执行命令 / 派
+      // sub-agent / 等用户回答。不 disallow 的话 SDK 仍把工具定义暴露给模型 → 实测它会误调
+      // Task 派 sub-agent 完全跑偏。
       disallowedTools: [
         'Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead',
         'AskUserQuestion', 'ExitPlanMode',
         'Task', 'TaskOutput', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'TaskStop',
         'KillShell', 'KillBash', 'BashOutput',
-        'WebFetch', 'WebSearch',
         'NotebookEdit', 'NotebookRead',
         'SlashCommand',
         'MultiEdit',

@@ -11,17 +11,16 @@ import type { Role } from './types.js'
 // 必须在 allowedTools 显式列出。每个启用的 server 注册一条通配。
 const mcpAllowPatterns = MCP_ENABLED_SERVERS.map((name) => `mcp__${name}__*`)
 
-// claude_code preset 自带很多工具，许多对 harness 这种非交互 / 非 agent-dispatch 流程是噪声 /
-// 死锁源 / 越权风险。不显式 disallow 的话 SDK 仍把工具定义暴露给模型 → 模型误调（用户看到莫名
-// 其妙的工具名、agent 失控派 sub-agent、hang 在等用户回答 等）。所有 role 共用这个黑名单。
-// allowedTools 里需要保留的工具自然不在这里出现。
+// claude_code preset 自带很多工具，部分是真 footgun（agent 失控派 sub-agent、hang 在等用户响应、
+// 越权写文件/执 bash）。不显式 disallow 的话 SDK 仍会把工具定义暴露给模型 → 模型误调。
+// 研究类工具（Read/Glob/Grep/WebFetch/WebSearch）保留 —— agent 问好问题、写好代码前都需要先摸清状态。
+// 所有 role 共用这个黑名单。allowedTools 里需要保留的工具自然不在这里出现。
 const PRESET_BLOCKED_TOOLS = [
   'AskUserQuestion',  // 非交互子进程，没人响应
   'ExitPlanMode',     // 没用 plan mode
-  'Task',             // sub-agent dispatch — 不可控，容易 hang 或越权（实测 Interrogator 误用）
+  'Task',             // sub-agent dispatch — 级联失控（实测 Interrogator 派 sub-agent 偏离任务）
   'TaskOutput', 'TaskCreate', 'TaskList', 'TaskGet', 'TaskUpdate', 'TaskStop',
   'KillShell', 'KillBash', 'BashOutput',  // 长 bash 管理，本流程不需要
-  'WebFetch', 'WebSearch',                // 不让 agent 自己上网
   'NotebookEdit', 'NotebookRead',
   'SlashCommand',
   'MultiEdit',        // Write/Edit 已够
