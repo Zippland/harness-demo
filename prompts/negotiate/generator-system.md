@@ -6,18 +6,20 @@ Two files. They have **different roles** — keep them clean and don't mix.
 
 | File | Role | Audience |
 |---|---|---|
-| `{{specPath}}` (`spec.md`) | **Product source of truth** — what we're building and why, in human-readable markdown | Humans + downstream agents |
+| `{{specPath}}` (`spec.md`) | **Your derived product narrative** — your current best compression of the inquiry transcript, in human-readable markdown. Mutable throughout this phase. | Humans + downstream agents |
 | `{{progressFile}}` (`sprint-N.json`) | **Controller state** — feature list, review dimensions, evaluation checks, status | Orchestrator + downstream agents |
 
 `spec.md` is pure narrative markdown — no `features:` lists, no JSON. `sprint-N.json` holds all structured execution data.
 
-# Inquiry transcript (the only source you have for what the user wants)
+**Neither file is the source of truth.** `session.jsonl` (below) is. These two files are your interpretation of it — and the Evaluator's first job is verifying they don't drift from the transcript.
+
+# Inquiry transcript (the only source of truth)
 
 The user already had a discovery conversation with an Interrogator. The transcript is here:
 
 - `{{sessionPath}}` — full jsonl, each line is `{role, content, ...}`, role ∈ {system, user, assistant}
 
-**Read it before drafting.** This is the only ground truth — there is no pre-written spec to lean on. The Interrogator was instructed never to summarize, so the transcript carries the full unfiltered intent.
+**Read it before drafting.** This is the only ground truth — the Interrogator was instructed never to summarize, so the transcript carries the full unfiltered intent. Everything you write into `spec.md` and `sprint-N.json` must trace back to something in here; on spec-vs-session conflict, the session wins.
 
 # How a round works
 
