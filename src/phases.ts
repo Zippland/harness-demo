@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import { execSync } from 'child_process'
-import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR, inquiryDirFor } from './config.js'
+import { config, WORK_DIR, PRINCIPLES_FILE, TOOL_DIR, inquiryDirFor, progressDirFor } from './config.js'
 import { runAgent, loadPrompt } from './agent.js'
 import { referenceFromInquiryDir, inquiryPaths, loadTask, saveTask } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation, ensureProgressDir } from './sprint.js'
@@ -167,7 +167,7 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
     console.log(dim('  Resuming mid-sprint negotiate from previous run...'))
     generatorMsg = 'Resuming. Continue refining spec.md and sprint-N.json from where you left off.'
   } else if (previousReview) {
-    generatorMsg = `Sprint ${sprintNum} — a prior sprint failed review and we're re-negotiating. Address this feedback in spec.md / ${sprintFile}:\n\n${previousReview}\n\nThe previous sprint files are in progress/; you can read them to recall what was tried.`
+    generatorMsg = `Sprint ${sprintNum} — a prior sprint failed review and we're re-negotiating. Address this feedback in spec.md / ${sprintFile}:\n\n${previousReview}\n\nThe previous sprint files are in ${progressDirFor(taskId)}; you can read them to recall what was tried.`
   } else {
     generatorMsg = `Sprint ${sprintNum}. Read the inquiry session.jsonl, then draft spec.md (product narrative) and the sprint contract at ${sprintFile} (structured execution data).`
   }
@@ -448,9 +448,10 @@ export async function holisticReview(taskId: string): Promise<{ pass: boolean; f
   emit('task.phase_start', { taskId, phase: 'holistic' })
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
   const inquiryReference = referenceFromInquiryDir(inquiryDirFor(taskId))
+  const progressDir = progressDirFor(taskId)
 
   const { structured } = await runAgentExpectStructured('Evaluator',
-    loadPrompt('review/holistic', { inquiryReference }),
+    loadPrompt('review/holistic', { inquiryReference, progressDir }),
     HOLISTIC_SCHEMA,
     { label: 'holistic' },
   )

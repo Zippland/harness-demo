@@ -13,7 +13,7 @@ Start from first principles. Re-read the spec. Forget about sprints, features, d
 - What's there but doesn't work, doesn't make sense, or feels wrong?
 - Does everything fit together as a coherent whole?
 
-Sprint files are in `.harness/progress/` if you need context on how it was built.
+Sprint files (`sprint-1.json`, `sprint-2.json`, ...) are in `{{progressDir}}` if you need context on how it was built.
 
 # Your final verdict
 
