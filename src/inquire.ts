@@ -3,6 +3,7 @@ import { resolve } from 'path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { config, WORK_DIR, TASKS_DIR, taskDir, inquiryDirFor, progressDirFor, PROMPTS_DIR } from './config.js'
 import { bold, dim, green, cyan, logTool } from './ui.js'
+import { emit, isApiMode } from './event.js'
 
 export interface Task {
   taskId: string
@@ -158,6 +159,94 @@ function newTask(originalTask: string): Task {
   }
 }
 
+// ─── Inquiry 用户输入源抽象 ───
+//
+// CLI 模式：readline 从终端读，识别 /done
+// API 模式：从 stdin 读 JSONL control events （由 harness-ops daemon 注入）
+//   { "type": "user_message", "content": "..." } → 用户新一条消息
+//   { "type": "user_done" }                       → 用户按下"完成"按钮
+//
+// 两者用同一个接口，inquire() 不感知差异。
+interface InquiryInputSource {
+  next(promptHint: string): Promise<{ done: boolean; content?: string }>
+  close(): void
+}
+
+function makeReadlineSource(): InquiryInputSource {
+  let rl: any
+  const init = (async () => {
+    const readline = await import('readline')
+    rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+  })()
+  return {
+    async next(hint) {
+      await init
+      const reply: string = await new Promise((res) => rl.question(hint, res))
+      const trimmed = reply.trim()
+      if (trimmed.toLowerCase() === '/done') return { done: true }
+      return { done: false, content: trimmed }
+    },
+    close() { rl?.close() },
+  }
+}
+
+function makeApiControlSource(): InquiryInputSource {
+  const queue: string[] = []
+  const waiters: ((line: string) => void)[] = []
+  let buffer = ''
+  let attached = false
+
+  function ensureAttached() {
+    if (attached) return
+    attached = true
+    process.stdin.setEncoding('utf-8')
+    process.stdin.on('data', (chunk: any) => {
+      buffer += chunk
+      let idx
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim()
+        buffer = buffer.slice(idx + 1)
+        if (!line) continue
+        if (waiters.length) waiters.shift()!(line)
+        else queue.push(line)
+      }
+    })
+  }
+
+  async function nextLine(): Promise<string> {
+    ensureAttached()
+    if (queue.length) return queue.shift()!
+    return new Promise((res) => waiters.push(res))
+  }
+
+  return {
+    async next(_hint) {
+      const line = await nextLine()
+      try {
+        const evt = JSON.parse(line)
+        if (evt?.type === 'user_done') {
+          emit('inquiry.user_done', {})
+          return { done: true }
+        }
+        if (evt?.type === 'user_message' && typeof evt.content === 'string') {
+          emit('inquiry.user_message', { content: evt.content })
+          return { done: false, content: evt.content }
+        }
+        // 未知 control event：当作空回应，让 Interrogator 继续追问
+        return { done: false, content: '' }
+      } catch {
+        // 兼容：非 JSON 行视作纯文本（罕见，例如 daemon bug）
+        return { done: false, content: line }
+      }
+    },
+    close() { /* process.stdin 由 runtime 管理，不主动 detach */ },
+  }
+}
+
+function makeInquirySource(): InquiryInputSource {
+  return isApiMode() ? makeApiControlSource() : makeReadlineSource()
+}
+
 /**
  * task.json：写入 task 元数据 + 跨 sprint 的 session IDs。
  * 生命周期状态（pending/in-progress/completed）仍由文件结构隐含（见 taskStatus()），
@@ -171,6 +260,8 @@ export async function inquire(originalTask: string): Promise<Task> {
   mkdirSync(TASKS_DIR, { recursive: true })
   const task = newTask(originalTask)
 
+  emit('inquiry.start', { taskId: task.taskId, originalTask })
+
   const sessionLog = createWriteStream(task.sessionPath, { flags: 'a' })
 
   // 首轮 setup：role 和 originalTask 分两条事件记录
@@ -178,15 +269,15 @@ export async function inquire(originalTask: string): Promise<Task> {
   writeEvent(sessionLog, { role: 'system', content: roleText })
   writeEvent(sessionLog, { role: 'user', content: originalTask })
 
-  const readline = await import('readline')
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout })
-  const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res))
+  const input = makeInquirySource()
 
   console.log(bold('\n  ══ INQUIRY ══\n'))
   console.log(dim(`  Task: ${task.taskId}`))
   console.log(dim('  Talk with the Interrogator to surface what this task really is.'))
   console.log(dim('  Interrogator only asks — never writes the spec.'))
-  console.log(dim('  Type /done when you feel enough has been surfaced.\n'))
+  console.log(dim(isApiMode()
+    ? '  Send {"type":"user_done"} on stdin (or click Done in the UI) to close.\n'
+    : '  Type /done when you feel enough has been surfaced.\n'))
 
   // roleText 沉到 systemPrompt（永驻 system 层 + 触发 SDK claude_code preset 注入环境信息）。
   // user message 只放真正的对话内容。首轮传 systemPromptAppend；后续 turn 走 resume，session 内 system 上下文已有。
@@ -197,27 +288,31 @@ export async function inquire(originalTask: string): Promise<Task> {
     console.log(`\n  ${dim('──')} ${cyan('Interrogator')} ${dim('──')}`)
     const turn = await runInterrogatorTurn(userMessage, sessionId, sessionLog, sessionId ? undefined : roleText)
     sessionId = turn.sessionId
+    emit('inquiry.assistant_text', { content: turn.text, modelDone: turn.done })
 
     if (turn.done) {
       console.log(green('\n  Interrogator: enough has been surfaced. Closing discussion.'))
       break
     }
 
-    const reply = (await ask('\n  You (or /done): ')).trim()
-    if (reply.toLowerCase() === '/done') {
+    const reply = await input.next('\n  You (or /done): ')
+    if (reply.done) {
       console.log(dim('  Discussion closed by user.'))
       break
     }
-    writeEvent(sessionLog, { role: 'user', content: reply })
-    userMessage = reply
+    const content = reply.content ?? ''
+    writeEvent(sessionLog, { role: 'user', content })
+    userMessage = content
   }
-  rl.close()
+  input.close()
 
   // spec.md 留作空占位文件，由后续 negotiate 阶段的 Generator 填入。
   // 控制论意义：spec 由对抗驱动产生（negotiate Gen↔Eval），而非 Interrogator 单边压缩。
   writeFileSync(task.specPath, '')
   sessionLog.end()
   saveTask(task)
+
+  emit('inquiry.done', { taskId: task.taskId })
 
   console.log(green(`\n  ✓ Inquiry saved: ${taskDir(task.taskId)}`))
   console.log(dim(`    session: ${task.sessionPath}`))
@@ -243,6 +338,33 @@ export function createDirectTask(originalTask: string): Task {
   writeFileSync(task.sessionPath, sessionSeed)
   saveTask(task)
 
+  return task
+}
+
+/**
+ * Headless 模式：调用方（一般是 harness-ops daemon）已经准备好 spec 草稿，
+ * 直接落到 spec.md，跳过 Interrogator 与 negotiate 的"从零起草"阶段。
+ *
+ * 与 createDirectTask 的区别：direct 把 task 文本扔给 Generator 让它去理解；
+ * headless 直接给 spec 草稿，让 negotiate 在已有草稿上做精炼，不浪费第一轮。
+ */
+export function createHeadlessTask(originalTask: string, specContent: string): Task {
+  mkdirSync(TASKS_DIR, { recursive: true })
+  const task = newTask(originalTask)
+
+  writeFileSync(task.specPath, specContent)
+
+  const ts = Date.now()
+  const sessionSeed = JSON.stringify({
+    ts, role: 'user', content: originalTask,
+  }) + '\n' + JSON.stringify({
+    ts, role: 'system',
+    content: 'Headless mode — no interactive inquiry. spec.md was pre-populated by the caller; treat it as the starting point for negotiate, refine rather than rewrite.',
+  }) + '\n'
+  writeFileSync(task.sessionPath, sessionSeed)
+  saveTask(task)
+
+  emit('inquiry.headless', { taskId: task.taskId, specBytes: specContent.length })
   return task
 }
 

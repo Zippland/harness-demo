@@ -6,6 +6,7 @@ import { runAgent, loadPrompt } from './agent.js'
 import { referenceFromInquiryDir, inquiryPaths, loadTask, saveTask } from './inquire.js'
 import { sprintPath, loadSprint, tryLoadSprint, parseEvaluation, ensureProgressDir } from './sprint.js'
 import { dim, bold, green, red, yellow, cyan, magenta, printReview, progressBar } from './ui.js'
+import { emit } from './event.js'
 import type { ReviewResult, SingleReview, Sprint } from './types.js'
 
 // ─── JSON Schemas ───
@@ -51,17 +52,20 @@ const HOLISTIC_SCHEMA = {
 
 // ─── Helpers ───
 
-function runChecks(checks: string[]): { pass: boolean; output: string } {
+function runChecks(checks: string[], featureId?: string): { pass: boolean; output: string } {
   const results: string[] = []
   for (const cmd of checks) {
     console.log(`    ${dim('$')} ${dim(cmd.slice(0, 100))}`)
+    emit('l1.command', { featureId, cmd })
     try {
       execSync(cmd, { cwd: WORK_DIR, encoding: 'utf-8', timeout: 60_000, stdio: ['pipe', 'pipe', 'pipe'] })
       results.push(`✓ ${cmd}`)
+      emit('l1.check_result', { featureId, cmd, pass: true })
     } catch (e: any) {
       const output = ((e.stdout ?? '') + (e.stderr ?? '')).trim()
       const tail = output.length > 1500 ? '...\n' + output.slice(-1500) : output
       console.log(`    ${red('✗')} ${dim('check failed')}`)
+      emit('l1.check_result', { featureId, cmd, pass: false, output: tail })
       return { pass: false, output: `Command failed: ${cmd}\n\n${tail}` }
     }
   }
@@ -119,6 +123,7 @@ async function runAgentExpectStructured(
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export async function negotiate(taskId: string, sprintNum: number, previousReview?: string): Promise<void> {
+  emit('task.phase_start', { taskId, sprintNum, phase: 'negotiate' })
   console.log(bold(`\n  ══ NEGOTIATE — Sprint ${sprintNum} ══\n`))
 
   ensureProgressDir(taskId)
@@ -215,6 +220,7 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
 
   // ─── Round trip 循环 ───
   for (let round = 1; round <= config.maxNegotiateRounds; round++) {
+    emit('negotiate.round_start', { taskId, sprintNum, round })
     console.log(`\n  ${dim('──')} ${magenta('Evaluator')} ${dim(`(round ${round})`)} ${dim('──')}`)
 
     const evalResult = await runAgentExpectStructured('Evaluator', evaluatorMsg, NEGOTIATE_APPROVAL_SCHEMA, {
@@ -227,14 +233,17 @@ export async function negotiate(taskId: string, sprintNum: number, previousRevie
 
     const approved = evalResult.structured?.approved === true
     console.log(`    ${approved ? green('✓ approved') : yellow('✗ needs-revision')}`)
+    emit('negotiate.verdict', { taskId, sprintNum, round, approved })
 
     if (approved) {
       console.log(green(`\n  Sprint Contract agreed (round ${round})`))
+      emit('negotiate.approved', { taskId, sprintNum, round })
       break
     }
 
     if (round >= config.maxNegotiateRounds) {
       console.error(red(`\n  Negotiation exhausted ${config.maxNegotiateRounds} rounds without approval. Manual intervention needed.`))
+      emit('negotiate.exhausted', { taskId, sprintNum, rounds: config.maxNegotiateRounds })
       process.exit(1)
     }
 
@@ -275,6 +284,7 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
   const total = sprint.features.length
   const pending = sprint.features.filter((f) => f.status !== 'passing')
 
+  emit('task.phase_start', { taskId, sprintNum, phase: 'implement', features: total, pending: pending.length })
   console.log(bold(`\n  ══ IMPLEMENT — Sprint ${sprintNum} ══  ${pending.length} features\n`))
 
   // implement 阶段所有 sprint × 所有 feature 共享同一个 Generator session：
@@ -289,10 +299,12 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
     const feature = sprint.features[i]
 
     if (feature.status === 'passing') {
+      emit('feature.skip', { taskId, sprintNum, id: feature.id, index: i + 1, total })
       console.log(`  ${dim(`[${i + 1}/${total}]`)} ${dim(feature.name)} ${green('done')}`)
       continue
     }
 
+    emit('feature.start', { taskId, sprintNum, id: feature.id, name: feature.name, index: i + 1, total })
     console.log(`\n  ${bold(`[${i + 1}/${total}]`)} ${bold(feature.name)}`)
 
     const prompt = loadPrompt('implement/generator-feature', {
@@ -316,13 +328,15 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
       passed = true
     } else {
       for (let attempt = 1; attempt <= config.maxL1Retries; attempt++) {
-        const check = runChecks(eval_.checks)
+        const check = runChecks(eval_.checks, feature.id)
         if (check.pass) {
           console.log(`    ${green('L1 PASS')}`)
+          emit('l1.attempt', { taskId, sprintNum, featureId: feature.id, attempt, max: config.maxL1Retries, passed: true })
           passed = true
           break
         }
         console.log(`    ${red('L1 FAIL')} ${dim(`attempt ${attempt}/${config.maxL1Retries}`)}`)
+        emit('l1.attempt', { taskId, sprintNum, featureId: feature.id, attempt, max: config.maxL1Retries, passed: false })
         if (attempt < config.maxL1Retries) {
           console.log(`\n  ${dim('──')} ${yellow('Generator')} ${dim('──')}`)
           const retryResult = await runAgent('Generator', loadPrompt('implement/generator-retry', { feedback: check.output }), { resume: sharedSessionId, silent: true })
@@ -337,7 +351,11 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
 
     feature.status = passed ? 'passing' : 'failing'
     writeFileSync(sprintPath(taskId, sprintNum), JSON.stringify(sprint, null, 2))
-    if (!passed) console.log(`    ${red('L1 gave up')}`)
+    emit('feature.status', { taskId, sprintNum, id: feature.id, status: feature.status })
+    if (!passed) {
+      console.log(`    ${red('L1 gave up')}`)
+      emit('l1.give_up', { taskId, sprintNum, featureId: feature.id })
+    }
   }
 
   const passCount = sprint.features.filter((f) => f.status === 'passing').length
@@ -349,6 +367,7 @@ export async function implement(taskId: string, sprintNum: number): Promise<void
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export async function reviewAll(taskId: string, sprintNum: number): Promise<{ review: ReviewResult | null; collectedReview: string }> {
+  emit('task.phase_start', { taskId, sprintNum, phase: 'review' })
   console.log(bold(`\n  ══ REVIEW — Sprint ${sprintNum} ══\n`))
   const sprint = loadSprint(taskId, sprintNum)
   const principles = readFileSync(PRINCIPLES_FILE, 'utf-8')
@@ -358,6 +377,7 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
 
   for (const feature of sprint.features) {
     reviewFns.push(() => (async () => {
+      emit('review.reviewer_start', { taskId, sprintNum, id: feature.id, type: 'feature' })
       console.log(`    ${dim('⟳')} ${dim(`reviewer: feature/${feature.id}`)}`)
       const scope = `**Feature: ${feature.id}**\n${feature.prompt}\n\nBackground: ${feature.background ?? ''}\n\nIntent: ${parseEvaluation(feature.evaluation).intent}`
       const { structured } = await runAgentExpectStructured('Evaluator',
@@ -372,6 +392,7 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
 
   for (const dimen of (sprint.reviewDimensions ?? [])) {
     reviewFns.push(() => (async () => {
+      emit('review.reviewer_start', { taskId, sprintNum, id: dimen.name, type: 'dimension' })
       console.log(`    ${dim('⟳')} ${dim(`reviewer: dimension/${dimen.name}`)}`)
       const scope = `**Dimension: ${dimen.name}**\n${dimen.description}\n\nGolden Principles:\n${principles}`
       const { structured } = await runAgentExpectStructured('Evaluator',
@@ -391,6 +412,7 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
     const icon = r.status === 'pass' ? green('✓') : red('✗')
     const tag = r.type === 'feature' ? cyan('feature') : magenta('dimension')
     console.log(`    ${icon} ${tag}/${bold(r.id)} ${dim(`[${r.score}/5]`)} ${dim(r.comment.slice(0, 80))}`)
+    emit('review.result', { taskId, sprintNum, id: r.id, type: r.type, status: r.status, score: r.score, comment: r.comment })
   }
 
   const featureReviews = results.filter((r) => r.type === 'feature').map((r) => ({ featureId: r.id, status: r.status, comment: r.comment }))
@@ -413,6 +435,7 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
     '', `## Verdict: ${approved ? 'ALL PASS' : 'NEEDS REVISION'}`,
   ].join('\n')
 
+  emit('review.summary', { taskId, sprintNum, approved, featurePass: featureReviews.filter(r => r.status === 'pass').length, dimensionPass: dimensionReviews.filter(r => r.status === 'pass').length })
   printReview(review)
   return { review, collectedReview }
 }
@@ -422,6 +445,7 @@ export async function reviewAll(taskId: string, sprintNum: number): Promise<{ re
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 export async function holisticReview(taskId: string): Promise<{ pass: boolean; feedback: string }> {
+  emit('task.phase_start', { taskId, phase: 'holistic' })
   console.log(bold(`\n  ══ HOLISTIC REVIEW ══\n`))
   const inquiryReference = referenceFromInquiryDir(inquiryDirFor(taskId))
 
@@ -440,6 +464,7 @@ export async function holisticReview(taskId: string): Promise<{ pass: boolean; f
   const pass = result.status === 'pass'
   const icon = pass ? green('✓') : red('✗')
   console.log(`\n    ${icon} ${bold('Holistic verdict')}: ${result.comment?.slice(0, 150)}`)
+  emit('holistic.verdict', { taskId, pass, comment: result.comment ?? '' })
 
   return { pass, feedback: result.comment ?? '' }
 }

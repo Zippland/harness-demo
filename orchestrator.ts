@@ -15,14 +15,15 @@
  * 每个 task 完整隔离在 .harness/tasks/<task-id>/ 下。
  */
 
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { config, TASKS_DIR } from './src/config.js'
 import { loadSprint, currentSprintNumber, updateSprintState } from './src/sprint.js'
 import { startLiteLLM } from './src/litellm.js'
 import { onboard } from './src/onboard.js'
-import { inquire, createDirectTask, listPendingTasks, pickTaskToExecute, taskStatus, type Task } from './src/inquire.js'
+import { inquire, createDirectTask, createHeadlessTask, listPendingTasks, pickTaskToExecute, taskStatus, type Task } from './src/inquire.js'
 import { negotiate, implement, reviewAll, holisticReview } from './src/phases.js'
 import { dim, bold, green, yellow, red } from './src/ui.js'
+import { emit, isApiMode } from './src/event.js'
 
 function usage(): void {
   console.error('  Usage:')
@@ -107,8 +108,24 @@ async function main(): Promise<void> {
   }
 
   // harness "<task>" 语法糖：discover + execute
+  // HARNESS_INQUIRY_MODE 决定走哪条创建路径（默认 interactive，由 inquire() 处理 CLI/API 输入源）
   const taskText = args.join(' ').trim()
-  const task = await inquire(taskText)
+  const inquiryMode = (process.env.HARNESS_INQUIRY_MODE ?? 'interactive') as 'interactive' | 'skip' | 'headless'
+
+  let task: Task
+  if (inquiryMode === 'skip') {
+    task = createDirectTask(taskText)
+  } else if (inquiryMode === 'headless') {
+    const specPath = process.env.HARNESS_HEADLESS_SPEC_PATH
+    if (!specPath || !existsSync(specPath)) {
+      console.error(red(`  HARNESS_INQUIRY_MODE=headless requires HARNESS_HEADLESS_SPEC_PATH pointing to an existing spec draft file.`))
+      process.exit(1)
+    }
+    const specContent = readFileSync(specPath, 'utf-8')
+    task = createHeadlessTask(taskText, specContent)
+  } else {
+    task = await inquire(taskText)
+  }
   await runExecution(task)
 }
 
@@ -140,7 +157,10 @@ async function runExecution(task: Task): Promise<void> {
     }
   }
 
+  emit('task.start', { taskId, isResume, startSprint, resumePhase })
+
   for (let sprintNum = startSprint; sprintNum <= startSprint + config.maxSprints; sprintNum++) {
+    emit('sprint.start', { taskId, sprintNum })
     console.log(bold(`\n  ━━━━━━━━━━━━━━━━━━━━━━━━━`))
     console.log(bold(`       Sprint ${sprintNum}`))
     console.log(bold(`  ━━━━━━━━━━━━━━━━━━━━━━━━━\n`))
@@ -177,6 +197,7 @@ async function runExecution(task: Task): Promise<void> {
         }
         console.log(green(bold(`\n  ✓ ALL APPROVED + HOLISTIC PASS — ${totalFeatures} features across ${sprintNum} sprint(s)\n`)))
         console.log(dim(`  Task complete. Files preserved at .harness/tasks/${taskId}/\n`))
+        emit('task.done', { taskId, result: 'success', sprintCount: sprintNum, totalFeatures })
         return
       }
 
@@ -195,6 +216,7 @@ async function runExecution(task: Task): Promise<void> {
 
   console.log(yellow(`\n  Reached max sprints (${config.maxSprints}) without convergence.`))
   console.log(dim(`  Task left in progress at .harness/tasks/${taskId}/\n`))
+  emit('task.done', { taskId, result: 'max_sprints', sprintCount: config.maxSprints })
 }
 
 function loadSprintSafe(taskId: string, n: number) {

@@ -3,6 +3,7 @@ import { readFileSync } from 'fs'
 import { resolve } from 'path'
 import { config, WORK_DIR, PROMPTS_DIR, MCP_SERVERS, MCP_ENABLED_SERVERS } from './config.js'
 import { dim, cyan, yellow, red, ROLE_STYLE, logTool } from './ui.js'
+import { emit } from './event.js'
 import type { Role } from './types.js'
 
 // ─── Agent 工具权限 ───
@@ -91,11 +92,16 @@ export async function runAgent(
           if (block.type === 'text' && block.text?.trim()) {
             const text = block.text.trim()
             textBlocks.push(text)
+            emit('agent.text', { role, content: text })
             for (const line of text.split('\n')) {
               console.log(`    ${cyan('>')} ${line}`)
             }
           }
           if (block.type === 'tool_use') {
+            // StructuredOutput 是 SDK 内部协议 tool，对外屏蔽（仅 daemon/UI 都不需要看）
+            if (block.name !== 'StructuredOutput') {
+              emit('agent.tool_call', { role, name: block.name, input: block.input })
+            }
             logTool(block.name, block.input)
           }
         }
