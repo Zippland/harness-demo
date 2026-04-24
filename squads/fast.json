@@ -1,0 +1,7 @@
+{
+  "id": "fast",
+  "name": "Fast Squad",
+  "maxSprints": 2,
+  "maxNegotiateRounds": 3,
+  "maxL1Retries": 2
+}

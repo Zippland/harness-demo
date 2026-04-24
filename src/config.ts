@@ -1,24 +1,16 @@
 import { readFileSync, existsSync } from 'fs'
-import { resolve, relative, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { resolve, relative } from 'path'
 import type { HarnessConfig, McpServerSpec } from './types.js'
+import { loadSquad } from './squad.js'
+import { isApiMode, emit } from './event.js'
 
-export const TOOL_DIR = dirname(dirname(fileURLToPath(import.meta.url)))
-export const WORK_DIR = process.cwd()
-export const HARNESS_DIR = resolve(WORK_DIR, '.harness')
-export const TASKS_DIR = resolve(HARNESS_DIR, 'tasks')
-export const PROMPTS_DIR = resolve(TOOL_DIR, 'prompts')
+// 路径常量统一从 paths.ts 来源；这里 re-export 保持向后兼容。
+export {
+  TOOL_DIR, WORK_DIR, HARNESS_DIR, TASKS_DIR, PROMPTS_DIR,
+  taskDir, inquiryDirFor, progressDirFor,
+} from './paths.js'
 
-// 每个 task 在 .harness/tasks/<task-id>/ 下完整隔离，含 inquiry/ + progress/ 子目录
-export function taskDir(taskId: string): string {
-  return resolve(TASKS_DIR, taskId)
-}
-export function inquiryDirFor(taskId: string): string {
-  return resolve(taskDir(taskId), 'inquiry')
-}
-export function progressDirFor(taskId: string): string {
-  return resolve(taskDir(taskId), 'progress')
-}
+import { TOOL_DIR, WORK_DIR } from './paths.js'
 
 const LOCAL_PRINCIPLES = resolve(WORK_DIR, '.harness/golden-principles.md')
 const DEFAULT_PRINCIPLES_PATH = resolve(TOOL_DIR, 'control/golden-principles.md')
@@ -39,6 +31,12 @@ function mergeConfig(base: HarnessConfig, override: Partial<HarnessConfig>): Har
   return merged
 }
 
+function logConfigSource(label: string): void {
+  // api mode 下 console.log 已被劫持到 stderr（bin/harness.mjs 早期 hack），
+  // 这里仍然打 —— stderr 上保留人类可读的"加载了哪份 config"信息。
+  console.log(`  \x1b[2m${label}\x1b[0m`)
+}
+
 function loadConfig(): HarnessConfig {
   let cfg: HarnessConfig = JSON.parse(readFileSync(resolve(TOOL_DIR, 'config.default.json'), 'utf-8'))
 
@@ -52,9 +50,23 @@ function loadConfig(): HarnessConfig {
       try {
         const override = JSON.parse(readFileSync(path, 'utf-8')) as Partial<HarnessConfig>
         cfg = mergeConfig(cfg, override)
-        console.log(`  \x1b[2mconfig:\x1b[0m ${relative(WORK_DIR, path) || path}`)
+        logConfigSource(`config: ${relative(WORK_DIR, path) || path}`)
         break
       } catch { /* 文件损坏，跳过 */ }
+    }
+  }
+
+  // Squad preset 优先级最高 —— 由 harness-ops daemon 通过 HARNESS_SQUAD env var 传入。
+  // CLI 直跑也可以 export HARNESS_SQUAD=<id> 测试 squad 行为。
+  const squadId = process.env.HARNESS_SQUAD
+  if (squadId) {
+    const squad = loadSquad(squadId)
+    if (squad) {
+      const { id: _id, name: _name, description: _desc, ...preset } = squad
+      cfg = mergeConfig(cfg, preset as Partial<HarnessConfig>)
+      logConfigSource(`squad: ${squadId}`)
+    } else {
+      console.error(`\x1b[33m  Warning: HARNESS_SQUAD=${squadId} but no squad preset found; using base config.\x1b[0m`)
     }
   }
 
@@ -84,4 +96,16 @@ if (config.apiKey) process.env.ANTHROPIC_API_KEY = config.apiKey
 // 使用自定义模型时，禁用 Claude Code 的实验性 Beta headers（第三方网关不认）
 if (config.customModel) {
   process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+}
+
+// api mode 下暴露生效 config 的摘要，便于 daemon 记录 + 调试。CLI 模式 no-op。
+if (isApiMode()) {
+  emit('engine.config', {
+    model: config.model,
+    maxSprints: config.maxSprints,
+    maxNegotiateRounds: config.maxNegotiateRounds,
+    maxL1Retries: config.maxL1Retries,
+    mcpServers: MCP_ENABLED_SERVERS,
+    squadId: process.env.HARNESS_SQUAD ?? null,
+  })
 }
