@@ -46,8 +46,12 @@ export interface SingleReview {
   comment: string
 }
 
-// MCP server 装载规范。三层门禁（enabled / roles / allowedTools）对所有 server 通用，
+// MCP server 装载规范。两层门禁（enabled / allowedTools）对所有 server 通用，
 // 不为某个 server 单开顶层配置块。详见 SPEC §八 / §10.7。
+//
+// 设计原则：capability 通用 + policy 走 prompt。tool 不分 role 限制，行为差异通过
+// 系统提示词区分。Interrogator 不挂 MCP 是硬约束（编码在 src/config.ts 里），
+// 不通过 per-server 配置控制。
 export interface McpServerSpec {
   // ─ 挂载形态 ─
   type?: 'stdio' | 'builtin'        // 默认 'stdio'；'builtin' 走 src/mcp-builtin/<name>.ts
@@ -56,7 +60,6 @@ export interface McpServerSpec {
   env?: Record<string, string>
   // ─ 挂载策略 ─
   enabled?: boolean                 // 默认 true
-  roles?: Role[]                    // 默认 ['Generator', 'Evaluator']；Interrogator 永不挂（硬约束）
   allowedTools?: string[]           // 默认通配；指定时项为 tool 短名（不带 mcp__<name>__ 前缀），退化为精确白名单
 }
 

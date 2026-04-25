@@ -13,8 +13,6 @@
     },
     "computer-use": {
       "type": "builtin",
-      "enabled": false,
-      "roles": ["Evaluator"],
       "allowedTools": ["screenshot", "left_click", "type", "key"]
     }
   }

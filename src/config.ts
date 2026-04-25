@@ -100,14 +100,12 @@ function builtinInstance(name: string): any | null {
   return inst
 }
 
-const DEFAULT_ROLES: Role[] = ['Generator', 'Evaluator']
-
 function isServerEnabledForRole(spec: McpServerSpec, role: Role): boolean {
   if (spec.enabled === false) return false
-  // Interrogator 永远不挂 MCP（硬约束，见 SPEC §八）
+  // Interrogator 永远不挂 MCP —— 硬约束（capability vs policy 解耦的边界例外，
+  // 详见 SPEC §10.7）。其余角色 capability 通用，行为差异由系统提示词区分。
   if (role === 'Interrogator') return false
-  const roles = spec.roles ?? DEFAULT_ROLES
-  return roles.includes(role)
+  return true
 }
 
 // 给 SDK 用的 mcpServers 表（按角色过滤；剥离 harness 自定字段）。
