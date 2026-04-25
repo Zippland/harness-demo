@@ -1,16 +1,16 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import { readFileSync } from 'fs'
 import { resolve } from 'path'
-import { config, WORK_DIR, PROMPTS_DIR, MCP_SERVERS, MCP_ENABLED_SERVERS } from './config.js'
+import { config, WORK_DIR, PROMPTS_DIR, mcpServersForRole, mcpAllowedToolsForRole } from './config.js'
 import { dim, cyan, yellow, red, ROLE_STYLE, logTool } from './ui.js'
 import { emit } from './event.js'
 import type { Role } from './types.js'
 
 // ─── Agent 工具权限 ───
-
+//
 // MCP 工具走 mcp__<server>__<tool> 命名。permissionMode:'acceptEdits' 不会自动放行 MCP，
-// 必须在 allowedTools 显式列出。每个启用的 server 注册一条通配。
-const mcpAllowPatterns = MCP_ENABLED_SERVERS.map((name) => `mcp__${name}__*`)
+// 必须在 allowedTools 显式列出。按角色 × per-server 配置展开（通配或精确白名单），
+// 装载 server 表也按角色过滤——见 src/config.ts。
 
 // claude_code preset 自带很多工具，部分是真 footgun（agent 失控派 sub-agent、hang 在等用户响应、
 // 越权写文件/执 bash）。不显式 disallow 的话 SDK 仍会把工具定义暴露给模型 → 模型误调。
@@ -30,18 +30,19 @@ const PRESET_BLOCKED_TOOLS = [
 const AGENT_CONFIG: Record<Role, Record<string, any>> = {
   Generator: {
     model: config.model,
-    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead', ...mcpAllowPatterns],
+    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'Bash', 'TodoWrite', 'TodoRead', ...mcpAllowedToolsForRole('Generator')],
     disallowedTools: [...PRESET_BLOCKED_TOOLS],
-    mcpServers: MCP_SERVERS,
+    mcpServers: mcpServersForRole('Generator'),
   },
   Evaluator: {
     model: config.model,
-    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead', ...mcpAllowPatterns],
+    allowedTools: ['Read', 'Glob', 'Grep', 'Bash', 'TodoRead', ...mcpAllowedToolsForRole('Evaluator')],
     disallowedTools: ['Write', 'Edit', 'TodoWrite', ...PRESET_BLOCKED_TOOLS],
-    mcpServers: MCP_SERVERS,
+    mcpServers: mcpServersForRole('Evaluator'),
   },
   Interrogator: {
-    // 故意不挂 MCP：纯对话阶段，给浏览器违背"不主动探索"的设计。
+    // 故意不挂 MCP：纯对话阶段，主动探索违背"只反问、不 propose"的设计。
+    // mcpServersForRole/mcpAllowedToolsForRole 对 Interrogator 也会返回空，这里就不拼了。
     model: config.model,
     allowedTools: ['Read', 'Glob', 'Grep'],
     disallowedTools: ['Write', 'Edit', 'Bash', 'TodoWrite', 'TodoRead', ...PRESET_BLOCKED_TOOLS],

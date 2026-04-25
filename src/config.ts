@@ -1,8 +1,9 @@
 import { readFileSync, existsSync } from 'fs'
 import { resolve, relative } from 'path'
-import type { HarnessConfig, McpServerSpec } from './types.js'
+import type { HarnessConfig, McpServerSpec, Role } from './types.js'
 import { loadSquad } from './squad.js'
 import { isApiMode, emit } from './event.js'
+import { buildComputerUseServer } from './mcp-builtin/computer-use.js'
 
 // 路径常量统一从 paths.ts 来源；这里 re-export 保持向后兼容。
 export {
@@ -75,19 +76,81 @@ function loadConfig(): HarnessConfig {
 
 export const config = loadConfig()
 
-// 已剥离 enabled 字段、已过滤禁用项的 SDK-ready 形态。SDK Options.mcpServers
-// 不认识 enabled 字段，得清理掉再传。
-export const MCP_SERVERS: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> =
-  Object.fromEntries(
-    Object.entries(config.mcpServers ?? {})
-      .filter(([, spec]) => spec.enabled !== false)
-      .map(([name, spec]) => {
-        const { enabled: _enabled, ...rest } = spec
-        return [name, rest]
-      }),
-  )
+// ─── MCP 装载（按角色） ───
+// SDK Options.mcpServers 不认识 enabled/roles/allowedTools 这些 harness 自定字段，
+// 必须剥离后再传；同时按角色过滤 + 按 server.allowedTools 展开 allowedTools 列表。
+// 详见 SPEC §八 / §10.7。
 
-export const MCP_ENABLED_SERVERS = Object.keys(MCP_SERVERS)
+// builtin server 名 → factory 注册表。新增 builtin 在这里挂一项即可。
+const BUILTIN_FACTORIES: Record<string, () => any> = {
+  'computer-use': buildComputerUseServer,
+}
+
+// 已构造的 builtin server 实例缓存：避免重复 createSdkMcpServer。
+const builtinInstances = new Map<string, any>()
+function builtinInstance(name: string): any | null {
+  if (builtinInstances.has(name)) return builtinInstances.get(name)
+  const factory = BUILTIN_FACTORIES[name]
+  if (!factory) {
+    console.error(`\x1b[33m  Warning: mcpServer "${name}" type='builtin' 但无对应 factory；忽略此 server。\x1b[0m`)
+    return null
+  }
+  const inst = factory()
+  builtinInstances.set(name, inst)
+  return inst
+}
+
+const DEFAULT_ROLES: Role[] = ['Generator', 'Evaluator']
+
+function isServerEnabledForRole(spec: McpServerSpec, role: Role): boolean {
+  if (spec.enabled === false) return false
+  // Interrogator 永远不挂 MCP（硬约束，见 SPEC §八）
+  if (role === 'Interrogator') return false
+  const roles = spec.roles ?? DEFAULT_ROLES
+  return roles.includes(role)
+}
+
+// 给 SDK 用的 mcpServers 表（按角色过滤；剥离 harness 自定字段）。
+export function mcpServersForRole(role: Role): Record<string, any> {
+  const result: Record<string, any> = {}
+  for (const [name, spec] of Object.entries(config.mcpServers ?? {})) {
+    if (!isServerEnabledForRole(spec, role)) continue
+    const type = spec.type ?? 'stdio'
+    if (type === 'builtin') {
+      const inst = builtinInstance(name)
+      if (inst) result[name] = inst
+    } else {
+      // stdio：保留 SDK 接受的字段
+      const { command, args, env } = spec
+      if (!command) {
+        console.error(`\x1b[33m  Warning: mcpServer "${name}" 缺 command 字段；跳过。\x1b[0m`)
+        continue
+      }
+      result[name] = { command, ...(args ? { args } : {}), ...(env ? { env } : {}) }
+    }
+  }
+  return result
+}
+
+// 给 SDK 用的 allowedTools 片段（按角色 × per-server allowedTools 展开）。
+// server.allowedTools 缺省 → 通配 mcp__<name>__*；指定 → 精确白名单 mcp__<name>__<tool>。
+export function mcpAllowedToolsForRole(role: Role): string[] {
+  const result: string[] = []
+  for (const [name, spec] of Object.entries(config.mcpServers ?? {})) {
+    if (!isServerEnabledForRole(spec, role)) continue
+    if (spec.allowedTools && spec.allowedTools.length > 0) {
+      for (const tool of spec.allowedTools) result.push(`mcp__${name}__${tool}`)
+    } else {
+      result.push(`mcp__${name}__*`)
+    }
+  }
+  return result
+}
+
+// 仅供 onboard / engine.config emit 用：所有 enabled（任意角色可见）的 server 名集合。
+export const MCP_ENABLED_SERVERS = Object.entries(config.mcpServers ?? {})
+  .filter(([, spec]) => spec.enabled !== false)
+  .map(([name]) => name)
 
 // 设置环境变量（在 agent 子进程启动前）
 if (config.apiBaseUrl) process.env.ANTHROPIC_BASE_URL = config.apiBaseUrl
